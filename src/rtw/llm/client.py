@@ -39,7 +39,7 @@ class CursorAgentClient(LLMClient):
     def __init__(
         self,
         workspace: str | Path,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "sonnet-4.6",
         force: bool = True,
         trust: bool = True,
     ):

@@ -119,8 +119,8 @@ rtw run task.md --max-iter 5
 # Verbose logging
 rtw -v run task.md
 
-# Test with mock LLM (no API calls)
-rtw run task.md --mock
+# Use a specific Cursor model
+rtw run task.md --model sonnet-4.5
 ```
 
 ### Manage runs
@@ -237,6 +237,7 @@ This will:
 | Variable | Description |
 |----------|-------------|
 | `CURSOR_API_KEY` | API key for Cursor agent (optional if logged in) |
+| `RTW_MODEL` | Default Cursor agent model (e.g. `sonnet-4.6`). Overridden by `--model`. |
 
 ### CLI Options
 
@@ -249,7 +250,8 @@ Options:
 
 Commands:
   run       Run architect loop on a task file
-  list      List previous runs  
+            --model MODEL   Cursor agent model (overrides RTW_MODEL)
+  list      List previous runs
   resume    Resume a previous run
 ```
 

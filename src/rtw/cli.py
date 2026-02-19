@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -34,7 +35,13 @@ def create_architect_flow(llm_client, on_state_change=None) -> Flow:
     return Flow(start=planner, name="architect", on_state_change=on_state_change)
 
 
-def run_task(task_file: Path, workspace: Path, max_iterations: int, mock: bool = False) -> int:
+def run_task(
+    task_file: Path,
+    workspace: Path,
+    max_iterations: int,
+    mock: bool = False,
+    model: str | None = None,
+) -> int:
     """Execute the architect loop on a task file."""
     logger = logging.getLogger("rtw")
 
@@ -67,7 +74,8 @@ def run_task(task_file: Path, workspace: Path, max_iterations: int, mock: bool =
             }
         )
     else:
-        llm_client = CursorAgentClient(workspace)
+        resolved_model = model or os.environ.get("RTW_MODEL")
+        llm_client = CursorAgentClient(workspace, model=resolved_model) if resolved_model else CursorAgentClient(workspace)
 
     flow = create_architect_flow(llm_client, on_state_change=storage.save)
 
@@ -158,7 +166,6 @@ def main() -> int:
 Examples:
   rtw run task.md                  # Run architect loop on task.md
   rtw run task.md --max-iter 5     # Limit to 5 iterations
-  rtw run task.md --mock           # Test with mock LLM
   rtw list                         # List previous runs
   rtw resume                       # Resume latest run
   rtw resume --run-id 20240101_120000  # Resume specific run
@@ -179,7 +186,12 @@ Examples:
     run_parser = subparsers.add_parser("run", help="Run architect loop on a task file")
     run_parser.add_argument("task_file", type=Path, help="Path to task.md file")
     run_parser.add_argument("--max-iter", type=int, default=10, help="Max iterations (default: 10)")
-    run_parser.add_argument("--mock", action="store_true", help="Use mock LLM for testing")
+    run_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Cursor agent model (e.g. sonnet-4.6). Overrides RTW_MODEL env.",
+    )
 
     subparsers.add_parser("list", help="List previous runs")
 
@@ -190,7 +202,12 @@ Examples:
     setup_logging(args.verbose)
 
     if args.command == "run":
-        return run_task(args.task_file, args.workspace, args.max_iter, args.mock)
+        return run_task(
+            args.task_file,
+            args.workspace,
+            args.max_iter,
+            model=args.model,
+        )
     elif args.command == "list":
         return list_runs(args.workspace)
     elif args.command == "resume":
