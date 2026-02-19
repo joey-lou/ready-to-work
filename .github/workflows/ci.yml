@@ -28,7 +28,7 @@ jobs:
         run: uv sync --dev
 
       - name: Run tests
-        run: uv run pytest -v
+        run: uv run python -m pytest -v
 
       - name: Run type checking
         run: uv run python -m py_compile src/rtw/cli.py src/rtw/core/flow.py

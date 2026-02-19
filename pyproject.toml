@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "ready-to-work contributors"}
+    {name = "Joey Lou", email = "joey99lou@gmail.com"}
 ]
 keywords = ["ai", "agent", "development", "automation", "llm", "cursor"]
 classifiers = [
@@ -33,6 +33,13 @@ Homepage = "https://github.com/joey-lou/ready-to-work"
 Documentation = "https://github.com/joey-lou/ready-to-work#readme"
 Repository = "https://github.com/joey-lou/ready-to-work"
 Issues = "https://github.com/joey-lou/ready-to-work/issues"
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.0.0",
+]
 
 [dependency-groups]
 dev = [

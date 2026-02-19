@@ -75,7 +75,11 @@ def run_task(
         )
     else:
         resolved_model = model or os.environ.get("RTW_MODEL")
-        llm_client = CursorAgentClient(workspace, model=resolved_model) if resolved_model else CursorAgentClient(workspace)
+        llm_client = (
+            CursorAgentClient(workspace, model=resolved_model)
+            if resolved_model
+            else CursorAgentClient(workspace)
+        )
 
     flow = create_architect_flow(llm_client, on_state_change=storage.save)
 
