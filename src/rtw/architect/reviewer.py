@@ -1,0 +1,126 @@
+"""Reviewer node for rtw architect loop."""
+
+import logging
+from typing import Any
+
+from rtw.core import FlowStatus, Node, SharedState
+from rtw.llm import LLMClient
+
+logger = logging.getLogger(__name__)
+
+REVIEWER_SYSTEM = """You are a senior code reviewer and QA engineer.
+Evaluate the build results against the original requirements.
+
+Output your review as JSON:
+{
+    "verdict": "approve|iterate|blocked",
+    "score": 0-100,
+    "summary": "Brief assessment of the work",
+    "strengths": ["What was done well"],
+    "issues": [
+        {
+            "severity": "critical|major|minor",
+            "description": "What's wrong",
+            "suggestion": "How to fix it"
+        }
+    ],
+    "feedback": "Detailed feedback for the next iteration if needed",
+    "blocking_reason": "If verdict is 'blocked', explain why human intervention is needed"
+}
+
+Verdicts:
+- "approve": Work meets requirements, ready to complete
+- "iterate": Work needs improvement, provide feedback for next iteration
+- "blocked": Cannot proceed without human intervention (missing info, ambiguous requirements, external dependency)"""
+
+
+class ReviewerNode(Node):
+    """
+    Reviews build results against requirements and decides next action.
+
+    Inputs: Build results, original task, plan
+    Outputs: Review verdict (approve/iterate/blocked) with feedback
+    """
+
+    def __init__(self, llm: LLMClient):
+        super().__init__("Reviewer")
+        self.llm = llm
+
+    def prep(self, state: SharedState) -> dict[str, Any]:
+        """Gather all context for review."""
+        state.status = FlowStatus.REVIEWING
+
+        record = state.current_record()
+
+        return {
+            "task_content": state.task_content,
+            "plan": record.plan if record else None,
+            "build_result": record.build_result if record else None,
+            "iteration": state.current_iteration,
+            "max_iterations": state.max_iterations,
+            "artifacts": [{"path": a.path, "action": a.action} for a in state.artifacts],
+            "history_length": len(state.history),
+        }
+
+    def exec(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Evaluate build results via LLM."""
+        prompt = self._build_prompt(context)
+
+        logger.info(f"Reviewing iteration {context['iteration']}")
+        result = self.llm.complete_json(prompt, system=REVIEWER_SYSTEM)
+
+        return result
+
+    def post(self, state: SharedState, prep_result: dict, exec_result: dict) -> str | None:
+        """Process review verdict and route accordingly."""
+        record = state.current_record()
+        if record:
+            record.review_result = exec_result
+
+        verdict = exec_result.get("verdict", "iterate")
+        score = exec_result.get("score", 0)
+
+        logger.info(f"Review verdict: {verdict} (score: {score})")
+
+        if verdict == "approve":
+            state.status = FlowStatus.COMPLETED
+            state.final_summary = exec_result.get("summary", "Task completed successfully")
+            logger.info("Task approved - flow complete")
+            return None  # End flow
+
+        elif verdict == "blocked":
+            state.status = FlowStatus.BLOCKED
+            state.blocking_reason = exec_result.get("blocking_reason", "Unknown blocking issue")
+            logger.warning(f"Task blocked: {state.blocking_reason}")
+            return None  # End flow, needs human intervention
+
+        else:  # iterate
+            feedback = exec_result.get("feedback", "")
+            logger.info(f"Iteration needed. Feedback: {feedback[:100]}...")
+            state.touch()
+            return "plan"  # Loop back to planner
+
+    def _build_prompt(self, context: dict[str, Any]) -> str:
+        parts = [
+            "# Original Requirements\n",
+            context["task_content"],
+            "\n# Implementation Plan\n",
+            str(context.get("plan", {})),
+            "\n# Build Results\n",
+            str(context.get("build_result", {})),
+            "\n# Artifacts Created\n",
+        ]
+
+        for artifact in context.get("artifacts", []):
+            parts.append(f"- {artifact['action']}: {artifact['path']}\n")
+
+        parts.extend(
+            [
+                "\n# Iteration Info",
+                f"- Current iteration: {context['iteration']} of {context['max_iterations']}",
+                f"- Total history entries: {context['history_length']}",
+                "\n\nReview this work and provide your verdict as JSON.",
+            ]
+        )
+
+        return "\n".join(parts)
