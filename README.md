@@ -27,13 +27,32 @@ Uses [Cursor Agent CLI](https://cursor.com/docs/cli) as the default LLM backend.
 ```bash
 # Install uv if you haven't
 curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-# Clone and install
-git clone https://github.com/yourorg/ready-to-work.git
+#### Option A: Install as a global tool (run from anywhere)
+
+```bash
+# Install directly from the repo
+uv tool install git+https://github.com/joey-lou/ready-to-work.git
+
+# Or from a local clone
+git clone https://github.com/joey-lou/ready-to-work.git
+uv tool install ./ready-to-work
+
+# Now rtw is available globally
+rtw --help
+```
+
+This installs `rtw` in an isolated environment and adds it to your PATH (`~/.local/bin`).
+
+#### Option B: Clone and run with uv
+
+```bash
+git clone https://github.com/joey-lou/ready-to-work.git
 cd ready-to-work
 uv sync
 
-# Run rtw
+# Run rtw (must be in repo directory)
 uv run rtw --help
 ```
 
@@ -43,10 +62,16 @@ uv run rtw --help
 pip install ready-to-work
 ```
 
+### Using pipx
+
+```bash
+pipx install ready-to-work
+```
+
 ### From source
 
 ```bash
-git clone https://github.com/yourorg/ready-to-work.git
+git clone https://github.com/joey-lou/ready-to-work.git
 cd ready-to-work
 pip install -e .
 ```
@@ -72,11 +97,13 @@ Create a simple FastAPI app with one endpoint that returns {"message": "hello"}.
 EOF
 
 # Run the architect loop
-uv run rtw run my_task.md
+rtw run my_task.md
 
 # Or with options
-uv run rtw run my_task.md --max-iter 5 -v
+rtw run my_task.md --max-iter 5 -v
 ```
+
+> **Note**: If you installed with `uv sync` instead of `uv tool install`, prefix commands with `uv run` (e.g., `uv run rtw run my_task.md`).
 
 ## Usage
 
@@ -84,29 +111,29 @@ uv run rtw run my_task.md --max-iter 5 -v
 
 ```bash
 # Basic usage
-uv run rtw run task.md
+rtw run task.md
 
 # With custom iteration limit
-uv run rtw run task.md --max-iter 5
+rtw run task.md --max-iter 5
 
 # Verbose logging
-uv run rtw -v run task.md
+rtw -v run task.md
 
 # Test with mock LLM (no API calls)
-uv run rtw run task.md --mock
+rtw run task.md --mock
 ```
 
 ### Manage runs
 
 ```bash
 # List previous runs
-uv run rtw list
+rtw list
 
 # Resume latest run
-uv run rtw resume
+rtw resume
 
 # Resume specific run
-uv run rtw resume --run-id 20240101_120000
+rtw resume --run-id 20240101_120000
 ```
 
 ## State Persistence

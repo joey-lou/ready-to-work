@@ -29,10 +29,10 @@ classifiers = [
 rtw = "rtw.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourorg/ready-to-work"
-Documentation = "https://github.com/yourorg/ready-to-work#readme"
-Repository = "https://github.com/yourorg/ready-to-work"
-Issues = "https://github.com/yourorg/ready-to-work/issues"
+Homepage = "https://github.com/joey-lou/ready-to-work"
+Documentation = "https://github.com/joey-lou/ready-to-work#readme"
+Repository = "https://github.com/joey-lou/ready-to-work"
+Issues = "https://github.com/joey-lou/ready-to-work/issues"
 
 [dependency-groups]
 dev = [
