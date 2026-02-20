@@ -4,12 +4,14 @@ import logging
 from typing import Any
 
 from rtw.core import FlowStatus, Node, SharedState
-from rtw.llm import LLMClient
+from rtw.llm import LLMClient, LLMResponseError
 
 logger = logging.getLogger(__name__)
 
 PLANNER_SYSTEM = """You are a senior software architect planning implementation tasks.
 Your role is to analyze requirements and create detailed, actionable implementation plans.
+
+Important: Limit each plan to 3–5 concrete steps per iteration so the builder can complete within time limits (~5 min). For larger goals, plan the next batch of steps in a follow-up iteration using reviewer feedback. Prefer multiple iterations over one large plan.
 
 Output your plan as JSON with this structure:
 {
@@ -65,13 +67,12 @@ class PlannerNode(Node):
         """Generate implementation plan via LLM."""
         prompt = self._build_prompt(context)
 
-        logger.info(f"Generating plan for iteration {context['iteration']}")
-        result = self.llm.complete_json(prompt, system=PLANNER_SYSTEM)
-
-        if "error" in result:
-            logger.warning(f"Plan generation had issues: {result.get('error')}")
-
-        return result
+        logger.info("Generating plan for iteration %d", context["iteration"])
+        try:
+            return self.llm.complete_json(prompt, system=PLANNER_SYSTEM)
+        except LLMResponseError as e:
+            logger.error("Plan generation failed: %s (raw: %.200s)", e, e.raw)
+            raise
 
     def post(self, state: SharedState, prep_result: dict, exec_result: dict) -> str:
         """Store plan and transition to build phase."""
@@ -79,18 +80,15 @@ class PlannerNode(Node):
 
         record = state.current_record()
         if record:
-            record.plan = exec_result
+            record.plan = state.current_plan
 
         state.touch()
 
-        # Check for blocking issues in the plan
-        if exec_result.get("error"):
-            logger.warning("Plan generation failed, may need retry")
-
         risks = exec_result.get("risks", [])
         for risk in risks:
-            if "block" in risk.lower() or "cannot" in risk.lower():
-                logger.warning(f"Potential blocker identified: {risk}")
+            match risk.lower():
+                case r if "block" in r or "cannot" in r:
+                    logger.warning("Potential blocker identified: %s", risk)
 
         return "build"
 

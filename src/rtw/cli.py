@@ -7,9 +7,10 @@ import os
 import sys
 from pathlib import Path
 
+from rtw import __version__
 from rtw.architect import BuilderNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, SharedState
-from rtw.llm import CursorAgentClient, MockLLMClient
+from rtw.llm import KNOWN_MODELS, CursorAgentClient, StubLLMClient
 from rtw.storage import StateStorage
 
 
@@ -20,6 +21,44 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+_MOCK_RESPONSES = {
+    "architect": '{"summary": "Mock plan", "steps": [{"id": 1, "description": "Test step", "type": "create", "target": "test.py", "details": "Create test file"}], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
+    "developer": '{"completed_steps": [{"step_id": 1, "status": "completed", "action_taken": "Created test file", "files_affected": ["test.py"], "notes": "Done"}], "artifacts_created": [{"path": "test.py", "action": "created"}], "issues_encountered": [], "next_steps_suggested": []}',
+    "reviewer": '{"verdict": "approve", "score": 95, "summary": "Task completed successfully", "strengths": ["Clean implementation"], "issues": [], "feedback": "", "blocking_reason": null}',
+}
+
+
+def _make_llm_client(
+    mock: bool, model: str | None, workspace: Path
+) -> "CursorAgentClient | StubLLMClient":
+    """Construct the appropriate LLM client based on flags."""
+    if mock:
+        logging.getLogger("rtw").info("Using stub LLM client for --mock mode")
+        return StubLLMClient(responses=_MOCK_RESPONSES)
+    return CursorAgentClient(workspace, model=model) if model else CursorAgentClient(workspace)
+
+
+def _report_final_status(logger: logging.Logger, final_state: SharedState) -> int:
+    """Log final state summary and return appropriate exit code."""
+    logger.info("=" * 50)
+    logger.info("Flow completed")
+    logger.info("=" * 50)
+    logger.info("Final status: %s", final_state.status.value)
+    logger.info("Iterations: %d", final_state.current_iteration)
+    logger.info("Artifacts: %d", len(final_state.artifacts))
+
+    match final_state.status:
+        case FlowStatus.COMPLETED:
+            logger.info("Summary: %s", final_state.final_summary)
+            return 0
+        case FlowStatus.BLOCKED:
+            logger.warning("Blocked: %s", final_state.blocking_reason)
+            return 2
+        case _:
+            logger.warning("Ended with status: %s", final_state.status.value)
+            return 1
 
 
 def create_architect_flow(llm_client, on_state_change=None) -> Flow:
@@ -46,16 +85,16 @@ def run_task(
     logger = logging.getLogger("rtw")
 
     if not task_file.exists():
-        logger.error(f"Task file not found: {task_file}")
+        logger.error("Task file not found: %s", task_file)
         return 1
 
     task_content = task_file.read_text()
-    logger.info(f"Loaded task from: {task_file}")
-    logger.info(f"Task length: {len(task_content)} chars")
+    logger.info("Loaded task from: %s", task_file)
+    logger.info("Task length: %d chars", len(task_content))
 
     storage = StateStorage(workspace)
-    logger.info(f"Run ID: {storage.run_id}")
-    logger.info(f"State stored in: {storage.base_dir}")
+    logger.info("Run ID: %s", storage.run_id)
+    logger.info("State stored in: %s", storage.base_dir)
 
     state = SharedState(
         task_file=str(task_file),
@@ -64,23 +103,7 @@ def run_task(
         max_iterations=max_iterations,
     )
 
-    if mock:
-        logger.info("Using mock LLM client for testing")
-        llm_client = MockLLMClient(
-            responses={
-                "architect": '{"summary": "Mock plan", "steps": [{"id": 1, "description": "Test step", "type": "create", "target": "test.py", "details": "Create test file"}], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
-                "developer": '{"completed_steps": [{"step_id": 1, "status": "completed", "action_taken": "Created test file", "files_affected": ["test.py"], "notes": "Done"}], "artifacts_created": [{"path": "test.py", "action": "created"}], "issues_encountered": [], "next_steps_suggested": []}',
-                "reviewer": '{"verdict": "approve", "score": 95, "summary": "Task completed successfully", "strengths": ["Clean implementation"], "issues": [], "feedback": "", "blocking_reason": null}',
-            }
-        )
-    else:
-        resolved_model = model or os.environ.get("RTW_MODEL")
-        llm_client = (
-            CursorAgentClient(workspace, model=resolved_model)
-            if resolved_model
-            else CursorAgentClient(workspace)
-        )
-
+    llm_client = _make_llm_client(mock, model, workspace)
     flow = create_architect_flow(llm_client, on_state_change=storage.save)
 
     logger.info("=" * 50)
@@ -94,30 +117,20 @@ def run_task(
         storage.save(state)
         return 130
     except Exception as e:
-        logger.error(f"Flow failed: {e}")
+        logger.error("Flow failed: %s", e)
         storage.save(state)
         return 1
 
-    logger.info("=" * 50)
-    logger.info("Flow completed")
-    logger.info("=" * 50)
-    logger.info(f"Final status: {final_state.status.value}")
-    logger.info(f"Iterations: {final_state.current_iteration}")
-    logger.info(f"Artifacts: {len(final_state.artifacts)}")
-
-    if final_state.status == FlowStatus.COMPLETED:
-        logger.info(f"Summary: {final_state.final_summary}")
-        return 0
-    elif final_state.status == FlowStatus.BLOCKED:
-        logger.warning(f"Blocked: {final_state.blocking_reason}")
-        return 2
-    else:
-        logger.warning(f"Ended with status: {final_state.status.value}")
-        return 1
+    return _report_final_status(logger, final_state)
 
 
-def resume_run(workspace: Path, run_id: str | None = None) -> int:
-    """Resume a previous run from persisted state."""
+def resume_run(
+    workspace: Path,
+    run_id: str | None = None,
+    mock: bool = False,
+    model: str | None = None,
+) -> int:
+    """Resume a previous run from persisted state and continue the architect loop."""
     logger = logging.getLogger("rtw")
 
     if run_id:
@@ -125,19 +138,47 @@ def resume_run(workspace: Path, run_id: str | None = None) -> int:
     else:
         storage = StateStorage.get_latest_run(workspace)
         if not storage:
-            logger.error("No previous runs found")
+            logger.error(
+                "No previous runs found in %s. If the run is in another project, use: rtw resume -w /path/to/that/project",
+                workspace,
+            )
             return 1
 
     state = storage.load()
     if not state:
-        logger.error(f"Could not load state from run: {storage.run_id}")
+        logger.error(
+            "Could not load state from run %s (missing or invalid state file). "
+            "Check that -w points to the project that contains this run (e.g. rtw resume -w /path/to/rts --run-id %s).",
+            storage.run_id,
+            storage.run_id,
+        )
         return 1
 
-    logger.info(f"Resuming run: {storage.run_id}")
-    logger.info(f"Status: {state.status.value}, Iteration: {state.current_iteration}")
+    logger.info("Resuming run: %s", storage.run_id)
+    logger.info("Previous status: %s, Iteration: %d", state.status.value, state.current_iteration)
 
-    logger.info("Resume functionality would continue from this state")
-    return 0
+    # Reset so the loop continues; planner will set PLANNING and start next iteration
+    state.status = FlowStatus.PENDING
+
+    llm_client = _make_llm_client(mock, model, Path(state.workspace))
+    flow = create_architect_flow(llm_client, on_state_change=storage.save)
+
+    logger.info("=" * 50)
+    logger.info("Continuing architect loop")
+    logger.info("=" * 50)
+
+    try:
+        final_state = flow.run(state)
+    except KeyboardInterrupt:
+        logger.info("\nInterrupted by user")
+        storage.save(state)
+        return 130
+    except Exception as e:
+        logger.error("Flow failed: %s", e)
+        storage.save(state)
+        return 1
+
+    return _report_final_status(logger, final_state)
 
 
 def list_runs(workspace: Path) -> int:
@@ -168,14 +209,19 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  rtw -V                           # Show version
   rtw run task.md                  # Run architect loop on task.md
   rtw run task.md --max-iter 5     # Limit to 5 iterations
+  rtw run task.md --mock           # Run with mock LLM (no Cursor agent)
   rtw list                         # List previous runs
-  rtw resume                       # Resume latest run
+  rtw resume                       # Resume latest run (in current dir)
+  rtw resume --mock                # Resume latest run with mock LLM
+  rtw resume -w /path/to/project   # Resume run in another project
   rtw resume --run-id 20240101_120000  # Resume specific run
         """,
     )
 
+    parser.add_argument("-V", "--version", action="version", version=f"rtw {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     parser.add_argument(
         "-w",
@@ -196,28 +242,63 @@ Examples:
         default=None,
         help="Cursor agent model (e.g. sonnet-4.6). Overrides RTW_MODEL env.",
     )
+    run_parser.add_argument("--mock", action="store_true", help="Use mock LLM client (for testing)")
 
     subparsers.add_parser("list", help="List previous runs")
 
     resume_parser = subparsers.add_parser("resume", help="Resume a previous run")
     resume_parser.add_argument("--run-id", type=str, help="Specific run ID to resume")
+    resume_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Cursor agent model. Overrides RTW_MODEL env.",
+    )
+    resume_parser.add_argument(
+        "--mock", action="store_true", help="Use mock LLM client (for testing)"
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose)
 
-    if args.command == "run":
-        return run_task(
-            args.task_file,
-            args.workspace,
-            args.max_iter,
-            model=args.model,
-        )
-    elif args.command == "list":
-        return list_runs(args.workspace)
-    elif args.command == "resume":
-        return resume_run(args.workspace, args.run_id)
+    model_arg = getattr(args, "model", None)
+    mock_arg = getattr(args, "mock", False)
+    resolved_model = model_arg or os.environ.get("RTW_MODEL")
+    if resolved_model and not mock_arg:
+        skip_validation = os.environ.get("RTW_SKIP_MODEL_VALIDATION", "").strip() not in ("", "0")
+        if not skip_validation and resolved_model not in KNOWN_MODELS:
+            print(
+                f"Error: unknown model {resolved_model!r}.\n"
+                f"Available models: {', '.join(sorted(KNOWN_MODELS))}\n"
+                "Set RTW_SKIP_MODEL_VALIDATION=1 to bypass if this list is stale.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if resolved_model == "auto":
+            logging.getLogger("rtw").warning(
+                "Model 'auto' may return empty JSON responses; consider using 'sonnet-4.6' for reliability."
+            )
 
-    return 0
+    match args.command:
+        case "run":
+            return run_task(
+                args.task_file,
+                args.workspace,
+                args.max_iter,
+                mock=args.mock,
+                model=resolved_model,
+            )
+        case "list":
+            return list_runs(args.workspace)
+        case "resume":
+            return resume_run(
+                args.workspace,
+                run_id=args.run_id,
+                mock=args.mock,
+                model=resolved_model,
+            )
+        case _:
+            return 0
 
 
 if __name__ == "__main__":

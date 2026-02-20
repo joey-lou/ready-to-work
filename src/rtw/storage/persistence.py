@@ -19,12 +19,11 @@ class StateStorage:
     .rtw/
     ├── runs/
     │   ├── {run_id}/
-    │   │   ├── state.json          # Current state snapshot
-    │   │   ├── history/
-    │   │   │   ├── iter_001.json   # Per-iteration snapshots
-    │   │   │   ├── iter_002.json
-    │   │   │   └── ...
-    │   │   └── artifacts.json      # Artifact manifest
+    │   │   ├── state.json          # Current state snapshot (artifacts live here)
+    │   │   └── history/
+    │   │       ├── iter_001.json   # Per-iteration snapshots
+    │   │       ├── iter_002.json
+    │   │       └── ...
     """
 
     def __init__(self, workspace: str | Path, run_id: str | None = None):
@@ -49,7 +48,7 @@ class StateStorage:
         data = state.to_dict()
 
         self.state_file.write_text(json.dumps(data, indent=2))
-        logger.debug(f"State saved to {self.state_file}")
+        logger.debug("State saved to %s", self.state_file)
 
         if state.current_iteration > 0:
             iter_file = self.history_dir / f"iter_{state.current_iteration:03d}.json"
@@ -74,7 +73,7 @@ class StateStorage:
             data = json.loads(self.state_file.read_text())
             return SharedState.from_dict(data)
         except Exception as e:
-            logger.error(f"Failed to load state: {e}")
+            logger.error("Failed to load state: %s", e)
             return None
 
     def list_iterations(self) -> list[dict[str, Any]]:
@@ -84,16 +83,23 @@ class StateStorage:
             try:
                 iterations.append(json.loads(f.read_text()))
             except Exception as e:
-                logger.warning(f"Failed to read {f}: {e}")
+                logger.warning("Failed to read %s: %s", f, e)
         return iterations
 
     @classmethod
     def list_runs(cls, workspace: str | Path) -> list[str]:
-        """List all run IDs in a workspace."""
+        """List all run IDs in a workspace (only dirs that contain state.json)."""
         runs_dir = Path(workspace) / ".rtw" / "runs"
         if not runs_dir.exists():
             return []
-        return sorted([d.name for d in runs_dir.iterdir() if d.is_dir()], reverse=True)
+        return sorted(
+            [
+                d.name
+                for d in runs_dir.iterdir()
+                if d.is_dir() and (runs_dir / d.name / "state.json").is_file()
+            ],
+            reverse=True,
+        )
 
     @classmethod
     def get_latest_run(cls, workspace: str | Path) -> "StateStorage | None":

@@ -99,7 +99,11 @@ class SharedState:
             updated_at=data.get("updated_at", datetime.now().isoformat()),
         )
         state.artifacts = [
-            Artifact(path=a["path"], action=a["action"], timestamp=a["timestamp"])
+            Artifact(
+                path=a["path"],
+                action=a["action"],
+                timestamp=a.get("timestamp", datetime.now().isoformat()),
+            )
             for a in data.get("artifacts", [])
         ]
         state.history = [

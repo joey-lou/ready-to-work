@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from rtw.core import FlowStatus, Node, SharedState
-from rtw.llm import LLMClient
+from rtw.llm import LLMClient, LLMResponseError
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,12 @@ class ReviewerNode(Node):
         """Evaluate build results via LLM."""
         prompt = self._build_prompt(context)
 
-        logger.info(f"Reviewing iteration {context['iteration']}")
-        result = self.llm.complete_json(prompt, system=REVIEWER_SYSTEM)
-
-        return result
+        logger.info("Reviewing iteration %d", context["iteration"])
+        try:
+            return self.llm.complete_json(prompt, system=REVIEWER_SYSTEM)
+        except LLMResponseError as e:
+            logger.error("Review LLM call failed: %s (raw: %.200s)", e, e.raw)
+            raise
 
     def post(self, state: SharedState, prep_result: dict, exec_result: dict) -> str | None:
         """Process review verdict and route accordingly."""
@@ -80,25 +82,24 @@ class ReviewerNode(Node):
         verdict = exec_result.get("verdict", "iterate")
         score = exec_result.get("score", 0)
 
-        logger.info(f"Review verdict: {verdict} (score: {score})")
+        logger.info("Review verdict: %s (score: %s)", verdict, score)
 
-        if verdict == "approve":
-            state.status = FlowStatus.COMPLETED
-            state.final_summary = exec_result.get("summary", "Task completed successfully")
-            logger.info("Task approved - flow complete")
-            return None  # End flow
-
-        elif verdict == "blocked":
-            state.status = FlowStatus.BLOCKED
-            state.blocking_reason = exec_result.get("blocking_reason", "Unknown blocking issue")
-            logger.warning(f"Task blocked: {state.blocking_reason}")
-            return None  # End flow, needs human intervention
-
-        else:  # iterate
-            feedback = exec_result.get("feedback", "")
-            logger.info(f"Iteration needed. Feedback: {feedback[:100]}...")
-            state.touch()
-            return "plan"  # Loop back to planner
+        match verdict:
+            case "approve":
+                state.status = FlowStatus.COMPLETED
+                state.final_summary = exec_result.get("summary", "Task completed successfully")
+                logger.info("Task approved - flow complete")
+                return None
+            case "blocked":
+                state.status = FlowStatus.BLOCKED
+                state.blocking_reason = exec_result.get("blocking_reason", "Unknown blocking issue")
+                logger.warning("Task blocked: %s", state.blocking_reason)
+                return None
+            case _:  # iterate
+                feedback = exec_result.get("feedback", "")
+                logger.info("Iteration needed. Feedback: %.100s", feedback)
+                state.touch()
+                return "plan"
 
     def _build_prompt(self, context: dict[str, Any]) -> str:
         parts = [
