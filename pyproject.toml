@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Architect loop framework for AI-driven development"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = {file = "LICENSE"}
 authors = [
     {name = "Joey Lou", email = "joey99lou@gmail.com"}
 ]
