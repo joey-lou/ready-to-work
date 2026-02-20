@@ -2,9 +2,10 @@
 
 import tempfile
 
+from llm_mock import MockLLMClient
+
 from rtw.architect import BuilderNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, Node, SharedState
-from rtw.llm import MockLLMClient
 from rtw.storage import StateStorage
 
 
