@@ -14,6 +14,10 @@ MAX_STEPS_PER_BUILD = int(os.environ.get("RTW_MAX_STEPS_PER_BUILD", "5"))
 BUILDER_SYSTEM = """You are a senior software developer implementing a plan.
 Execute each step precisely and report what was done. Execute only the steps listed below; remaining steps will be handled in a later iteration.
 
+You may create/modify/delete code files in the workspace as needed. For any temporary or intermediate files (scratch data, debug scripts, etc.), use the tmp_dir provided in the context.
+
+Return the build result as JSON in your response. Do not write the JSON result to a file.
+
 Output your build result as JSON:
 {
     "completed_steps": [
@@ -49,12 +53,18 @@ class BuilderNode(Node):
         """Prepare build context from current plan."""
         state.status = FlowStatus.BUILDING
 
+        from rtw.storage import StateStorage
+
+        storage = StateStorage.get_latest_run(state.workspace)
+        tmp_dir = storage.tmp_dir if storage else None
+
         return {
             "plan": state.current_plan,
             "workspace": state.workspace,
             "task_content": state.task_content,
             "iteration": state.current_iteration,
             "existing_artifacts": [a.path for a in state.artifacts],
+            "tmp_dir": str(tmp_dir) if tmp_dir else None,
         }
 
     def exec(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -129,13 +139,11 @@ class BuilderNode(Node):
             for path in context["existing_artifacts"]:
                 parts.append(f"- {path}\n")
 
-        parts.extend(
-            [
-                "\n# Context",
-                f"- Workspace: {context['workspace']}",
-                f"- Iteration: {context['iteration']}",
-                "\n\nExecute this plan and report results as JSON.",
-            ]
-        )
+        parts.append("\n# Context")
+        parts.append(f"- Workspace: {context['workspace']}")
+        parts.append(f"- Iteration: {context['iteration']}")
+        if context.get("tmp_dir"):
+            parts.append(f"- Temp directory (for intermediate files): {context['tmp_dir']}")
+        parts.append("\n\nExecute this plan and report results as JSON.")
 
         return "\n".join(parts)

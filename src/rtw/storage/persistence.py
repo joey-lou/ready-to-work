@@ -19,7 +19,8 @@ class StateStorage:
     .rtw/
     ├── runs/
     │   ├── {run_id}/
-    │   │   ├── state.json          # Current state snapshot (artifacts live here)
+    │   │   ├── state.json          # Current state snapshot
+    │   │   ├── tmp/                # Temporary working files for this run
     │   │   └── history/
     │   │       ├── iter_001.json   # Per-iteration snapshots
     │   │       ├── iter_002.json
@@ -31,12 +32,14 @@ class StateStorage:
         self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.base_dir = self.workspace / ".rtw" / "runs" / self.run_id
         self.history_dir = self.base_dir / "history"
+        self.tmp_dir = self.base_dir / "tmp"
 
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.history_dir.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def state_file(self) -> Path:

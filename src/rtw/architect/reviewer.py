@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 REVIEWER_SYSTEM = """You are a senior code reviewer and QA engineer.
 Evaluate the build results against the original requirements.
 
+Return the review as JSON in your response. Do not write the review to a file.
+
 Output your review as JSON:
 {
     "verdict": "approve|iterate|blocked",

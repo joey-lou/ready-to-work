@@ -13,6 +13,8 @@ Your role is to analyze requirements and create detailed, actionable implementat
 
 Important: Limit each plan to 3–5 concrete steps per iteration so the builder can complete within time limits (~5 min). For larger goals, plan the next batch of steps in a follow-up iteration using reviewer feedback. Prefer multiple iterations over one large plan.
 
+Return the plan as JSON in your response. Do not write the plan to a file.
+
 Output your plan as JSON with this structure:
 {
     "summary": "Brief summary of what will be built",
