@@ -35,6 +35,16 @@ Pre-commit runs ruff and pytest on commit:
 uv run pre-commit install
 ```
 
+## Releasing
+
+Version is derived from git tags via `hatch-vcs`. To release:
+
+```bash
+git tag v0.3.0 && git push --tags
+```
+
+Pushing a tag triggers the [Release workflow](.github/workflows/release.yml), which builds the package and publishes to PyPI and GitHub Releases.
+
 ## License
 
 MIT
