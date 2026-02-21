@@ -1,14 +1,14 @@
-"""MockLLMClient: full-featured test double for the LLM layer."""
+"""MockLLMClient: full-featured test double for agent completions."""
 
 import json
 from typing import Any
 
-from rtw.llm import LLMClient
 
-
-class MockLLMClient(LLMClient):
+class MockLLMClient:
     """
-    Mock client for testing the flow without LLM calls.
+    Mock client for testing the flow without agent calls.
+
+    Provides complete_json() interface compatible with AgentBackend.
 
     Supports:
     - Key-based response routing (matched against system prompt then user prompt)

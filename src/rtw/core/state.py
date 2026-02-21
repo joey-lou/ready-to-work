@@ -33,6 +33,16 @@ class IterationRecord:
 
 
 @dataclass
+class LessonLearned:
+    """A lesson learned during the architect loop."""
+
+    iteration: int
+    category: str  # "success", "failure", "insight", "blocker_resolved"
+    description: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+@dataclass
 class SharedState:
     """Central state object passed through the architect loop."""
 
@@ -47,6 +57,9 @@ class SharedState:
     current_plan: dict | None = None
     artifacts: list[Artifact] = field(default_factory=list)
     history: list[IterationRecord] = field(default_factory=list)
+
+    # Cumulative memory across all iterations
+    lessons_learned: list[LessonLearned] = field(default_factory=list)
 
     blocking_reason: str | None = None
     final_summary: str | None = None
@@ -76,6 +89,15 @@ class SharedState:
                     "timestamp": h.timestamp,
                 }
                 for h in self.history
+            ],
+            "lessons_learned": [
+                {
+                    "iteration": ll.iteration,
+                    "category": ll.category,
+                    "description": ll.description,
+                    "timestamp": ll.timestamp,
+                }
+                for ll in self.lessons_learned
             ],
             "blocking_reason": self.blocking_reason,
             "final_summary": self.final_summary,
@@ -116,11 +138,51 @@ class SharedState:
             )
             for h in data.get("history", [])
         ]
+        state.lessons_learned = [
+            LessonLearned(
+                iteration=ll["iteration"],
+                category=ll["category"],
+                description=ll["description"],
+                timestamp=ll.get("timestamp", datetime.now().isoformat()),
+            )
+            for ll in data.get("lessons_learned", [])
+        ]
         return state
 
     def add_artifact(self, path: str, action: str) -> None:
         self.artifacts.append(Artifact(path=path, action=action))
         self.touch()
+
+    def add_lesson(self, category: str, description: str) -> None:
+        """Add a lesson learned to cumulative memory."""
+        self.lessons_learned.append(
+            LessonLearned(
+                iteration=self.current_iteration,
+                category=category,
+                description=description,
+            )
+        )
+        self.touch()
+
+    def get_lessons_summary(self) -> str:
+        """Generate a summary of all lessons learned for LLM context."""
+        if not self.lessons_learned:
+            return ""
+
+        by_category: dict[str, list[str]] = {}
+        for ll in self.lessons_learned:
+            by_category.setdefault(ll.category, []).append(
+                f"[iter {ll.iteration}] {ll.description}"
+            )
+
+        parts = ["## Lessons Learned from Previous Iterations\n"]
+        for category, lessons in by_category.items():
+            parts.append(f"### {category.replace('_', ' ').title()}")
+            for lesson in lessons:
+                parts.append(f"- {lesson}")
+            parts.append("")
+
+        return "\n".join(parts)
 
     def start_iteration(self) -> IterationRecord:
         self.current_iteration += 1
@@ -147,3 +209,45 @@ class SharedState:
         if self.current_plan:
             lines.append(f"Current plan steps: {len(self.current_plan.get('steps', []))}")
         return "\n".join(lines)
+
+    def get_step_results(self, iteration: int | None = None) -> list[dict[str, Any]]:
+        """Get step-level execution results for an iteration.
+
+        Args:
+            iteration: Specific iteration number, or None for current.
+
+        Returns:
+            List of step result dicts with step_id, status, action_taken, etc.
+        """
+        target_iter = iteration or self.current_iteration
+        for record in self.history:
+            if record.iteration == target_iter and record.build_result:
+                return record.build_result.get("completed_steps", [])
+        return []
+
+    def get_failed_steps(self, iteration: int | None = None) -> list[dict[str, Any]]:
+        """Get steps that failed in an iteration."""
+        steps = self.get_step_results(iteration)
+        return [s for s in steps if s.get("status") == "failed"]
+
+    def get_execution_summary(self) -> str:
+        """Summary of execution progress across all iterations."""
+        total_completed = 0
+        total_failed = 0
+        total_duration = 0.0
+
+        for record in self.history:
+            if record.build_result:
+                for step in record.build_result.get("completed_steps", []):
+                    if step.get("status") == "completed":
+                        total_completed += 1
+                    elif step.get("status") == "failed":
+                        total_failed += 1
+                    if step.get("duration_seconds"):
+                        total_duration += step["duration_seconds"]
+
+        return (
+            f"Execution: {total_completed} steps completed, "
+            f"{total_failed} failed across {len(self.history)} iterations "
+            f"({total_duration:.1f}s total)"
+        )

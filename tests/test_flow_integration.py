@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 from helpers import (
     APPROVE_RESPONSE,
-    BUILD_RESPONSE,
     ITERATE_RESPONSE,
     PLAN_RESPONSE,
+    MockAgentBackend,
     make_architect_flow,
 )
 from llm_mock import MockLLMClient
@@ -24,7 +24,7 @@ def make_state(tmpdir: str, **kwargs) -> SharedState:
 
 
 # ---------------------------------------------------------------------------
-# 1. Full plan->build->review->plan->build->review cycle (2 iterations)
+# 1. Full plan->execute->review->plan->execute->review cycle (2 iterations)
 # ---------------------------------------------------------------------------
 
 
@@ -40,13 +40,14 @@ def test_two_iteration_cycle_approve_on_second():
             return verdicts[min(idx, len(verdicts) - 1)]
         if system and "architect" in system.lower():
             return PLAN_RESPONSE
-        return BUILD_RESPONSE
+        return PLAN_RESPONSE
 
     llm = MockLLMClient(side_effect=side_effect)
+    agent = MockAgentBackend(llm)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         state = make_state(tmpdir, max_iterations=5)
-        flow = make_architect_flow(llm)
+        flow = make_architect_flow(agent)
         result = flow.run(state)
 
     assert result.status == FlowStatus.COMPLETED
@@ -70,14 +71,15 @@ def test_state_persistence_writes_iter_files():
             return verdicts[min(idx, len(verdicts) - 1)]
         if system and "architect" in system.lower():
             return PLAN_RESPONSE
-        return BUILD_RESPONSE
+        return PLAN_RESPONSE
 
     llm = MockLLMClient(side_effect=side_effect)
+    agent = MockAgentBackend(llm)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = StateStorage(tmpdir, "test_run")
         state = make_state(tmpdir, max_iterations=5)
-        flow = make_architect_flow(llm, on_state_change=storage.save)
+        flow = make_architect_flow(agent, on_state_change=storage.save)
         flow.run(state)
 
         iter_files = sorted(storage.history_dir.glob("iter_*.json"))
@@ -108,8 +110,10 @@ def test_keyboard_interrupt_mid_run_state_preserved():
                 raise KeyboardInterrupt
             return PLAN_RESPONSE
 
-        with patch("rtw.cli._make_llm_client") as mock_factory:
-            mock_factory.return_value = MockLLMClient(side_effect=interrupt_on_second)
+        llm = MockLLMClient(side_effect=interrupt_on_second)
+
+        with patch("rtw.cli.create_agent") as mock_factory:
+            mock_factory.return_value = MockAgentBackend(llm)
             result = run_task(task_file, Path(tmpdir), max_iterations=5, mock=False)
 
     assert result == 130
@@ -234,8 +238,10 @@ def test_run_task_with_flow_exception_returns_exit_1():
         def always_explode(prompt, system):
             raise RuntimeError("unexpected crash")
 
-        with patch("rtw.cli._make_llm_client") as mock_factory:
-            mock_factory.return_value = MockLLMClient(side_effect=always_explode)
+        llm = MockLLMClient(side_effect=always_explode)
+
+        with patch("rtw.cli.create_agent") as mock_factory:
+            mock_factory.return_value = MockAgentBackend(llm)
             result = run_task(
                 task_file=task_file, workspace=Path(tmpdir), max_iterations=5, mock=False
             )
@@ -267,24 +273,23 @@ def test_list_runs_with_corrupted_state_skips_gracefully():
 
 
 # ---------------------------------------------------------------------------
-# 11. run_task() respects RTW_MODEL env var via mock
+# 11. run_task() respects RTW_MODEL env var via create_agent
 # ---------------------------------------------------------------------------
 
 
 def test_run_task_respects_rtw_model_env_var():
-    """_make_llm_client uses RTW_MODEL when model arg is None and mock=False."""
+    """create_agent uses RTW_MODEL when model arg is None and mock=False."""
     import os
 
-    from rtw.cli import _make_llm_client
+    from rtw.agent import CursorAgentBackend
+    from rtw.cli import create_agent
 
     with tempfile.TemporaryDirectory() as tmpdir:
         os.environ["RTW_MODEL"] = "sonnet-4.6"
         try:
-            from rtw.llm import CursorAgentClient
-
-            client = _make_llm_client(mock=False, model=None, workspace=Path(tmpdir))
-            assert isinstance(client, CursorAgentClient)
-            assert client.model == "sonnet-4.6"
+            agent = create_agent(mock=False, model=None, workspace=Path(tmpdir))
+            assert isinstance(agent, CursorAgentBackend)
+            assert agent.model == "sonnet-4.6"
         finally:
             del os.environ["RTW_MODEL"]
 
@@ -327,14 +332,15 @@ def test_run_task_returns_exit_code_2_when_blocked():
         task_file = Path(tmpdir) / "task.md"
         task_file.write_text("Do something")
 
-        with patch("rtw.cli._make_llm_client") as mock_factory:
-            mock_factory.return_value = MockLLMClient(
-                responses={
-                    "architect": PLAN_RESPONSE,
-                    "developer": BUILD_RESPONSE,
-                    "reviewer": ITERATE_RESPONSE,
-                }
-            )
+        llm = MockLLMClient(
+            responses={
+                "architect": PLAN_RESPONSE,
+                "reviewer": ITERATE_RESPONSE,
+            }
+        )
+
+        with patch("rtw.cli.create_agent") as mock_factory:
+            mock_factory.return_value = MockAgentBackend(llm)
             result = run_task(
                 task_file=task_file, workspace=Path(tmpdir), max_iterations=1, mock=False
             )
@@ -355,10 +361,10 @@ def test_run_task_returns_exit_code_1_for_exception():
         task_file = Path(tmpdir) / "task.md"
         task_file.write_text("Do something")
 
-        with patch("rtw.cli._make_llm_client") as mock_factory:
-            mock_factory.return_value = MockLLMClient(
-                side_effect=lambda p, s: (_ for _ in ()).throw(RuntimeError("crash"))
-            )
+        llm = MockLLMClient(side_effect=lambda p, s: (_ for _ in ()).throw(RuntimeError("crash")))
+
+        with patch("rtw.cli.create_agent") as mock_factory:
+            mock_factory.return_value = MockAgentBackend(llm)
             result = run_task(
                 task_file=task_file, workspace=Path(tmpdir), max_iterations=5, mock=False
             )

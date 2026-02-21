@@ -2,9 +2,10 @@
 
 import tempfile
 
+from helpers import MockAgentBackend
 from llm_mock import MockLLMClient
 
-from rtw.architect import BuilderNode, PlannerNode, ReviewerNode
+from rtw.architect import ExecutorNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, Node, SharedState
 from rtw.storage import StateStorage
 
@@ -59,21 +60,21 @@ def test_flow_max_iterations():
 
 
 def test_architect_flow_mock():
-    """Test full architect flow with mock LLM."""
+    """Test full architect flow with mock agent."""
     mock_responses = {
         "architect": '{"summary": "Test plan", "steps": [{"id": 1, "description": "Do thing", "type": "create", "target": "file.py", "details": "details"}], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
-        "developer": '{"completed_steps": [{"step_id": 1, "status": "completed", "action_taken": "Did thing", "files_affected": ["file.py"], "notes": ""}], "artifacts_created": [{"path": "file.py", "action": "created"}], "issues_encountered": [], "next_steps_suggested": []}',
         "reviewer": '{"verdict": "approve", "score": 90, "summary": "Good job", "strengths": ["works"], "issues": [], "feedback": "", "blocking_reason": null}',
     }
 
     llm = MockLLMClient(responses=mock_responses)
+    agent = MockAgentBackend(llm)
 
-    planner = PlannerNode(llm)
-    builder = BuilderNode(llm)
-    reviewer = ReviewerNode(llm)
+    planner = PlannerNode(agent)
+    executor = ExecutorNode(agent)
+    reviewer = ReviewerNode(agent)
 
-    planner.on("build") >> builder
-    builder.on("review") >> reviewer
+    planner.on("build") >> executor
+    executor.on("review") >> reviewer
     reviewer.on("plan") >> planner
 
     flow = Flow(start=planner)
@@ -87,7 +88,6 @@ def test_architect_flow_mock():
 
     assert result.status == FlowStatus.COMPLETED
     assert result.current_iteration == 1
-    assert len(result.artifacts) == 1
 
 
 def test_state_persistence():

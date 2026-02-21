@@ -8,10 +8,12 @@ import sys
 from pathlib import Path
 
 from rtw import __version__
-from rtw.architect import BuilderNode, PlannerNode, ReviewerNode
+from rtw.agent import AgentBackend, CursorAgentBackend
+from rtw.architect import ExecutorNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, SharedState
-from rtw.llm import KNOWN_MODELS, CursorAgentClient, StubLLMClient
 from rtw.storage import StateStorage
+
+KNOWN_BACKENDS = frozenset({"cursor", "codex", "claude"})
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -23,21 +25,105 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
-_MOCK_RESPONSES = {
-    "architect": '{"summary": "Mock plan", "steps": [{"id": 1, "description": "Test step", "type": "create", "target": "test.py", "details": "Create test file"}], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
-    "developer": '{"completed_steps": [{"step_id": 1, "status": "completed", "action_taken": "Created test file", "files_affected": ["test.py"], "notes": "Done"}], "artifacts_created": [{"path": "test.py", "action": "created"}], "issues_encountered": [], "next_steps_suggested": []}',
-    "reviewer": '{"verdict": "approve", "score": 95, "summary": "Task completed successfully", "strengths": ["Clean implementation"], "issues": [], "feedback": "", "blocking_reason": null}',
-}
+class MockAgentBackend(AgentBackend):
+    """Mock backend for testing without real agent calls."""
+
+    def __init__(self):
+        # Don't call super().__init__ - we don't need workspace/model/timeout
+        self.workspace = Path.cwd()
+        self.model = None
+        self.timeout = 60
+
+    @property
+    def name(self) -> str:
+        return "mock"
+
+    # Override high-level methods directly (skip subprocess layer)
+    def execute_step(self, step, workspace, context=None):
+        from rtw.agent import StepResult, StepStatus
+
+        return StepResult(
+            step_id=step.get("id", 0),
+            status=StepStatus.COMPLETED,
+            description=step.get("description", ""),
+            action_taken="Mock action",
+            files_changed=[],
+        )
+
+    def complete_json(self, prompt, system=None):
+        if system and "architect" in system.lower():
+            return {
+                "summary": "Mock plan",
+                "steps": [
+                    {
+                        "id": 1,
+                        "description": "Mock step",
+                        "type": "create",
+                        "target": "mock.py",
+                        "details": "details",
+                    }
+                ],
+                "dependencies": [],
+                "risks": [],
+                "estimated_complexity": "low",
+            }
+        if system and "reviewer" in system.lower():
+            return {
+                "verdict": "approve",
+                "score": 90,
+                "summary": "Good",
+                "strengths": [],
+                "issues": [],
+                "feedback": "",
+                "blocking_reason": None,
+            }
+        return {"mock": True}
+
+    # Implement abstract methods (not used since we override execute_step/complete_json)
+    def _build_exec_command(self, prompt, workspace):
+        return ["echo", "mock"]
+
+    def _build_json_command(self, prompt):
+        return ["echo", "{}"]
+
+    def _parse_exec_output(self, output, step_id, description):
+        from rtw.agent import StepResult, StepStatus
+
+        return StepResult(step_id=step_id, status=StepStatus.COMPLETED, description=description)
+
+    def _parse_json_output(self, output):
+        return {}
 
 
-def _make_llm_client(
-    mock: bool, model: str | None, workspace: Path
-) -> "CursorAgentClient | StubLLMClient":
-    """Construct the appropriate LLM client based on flags."""
+def create_agent(
+    mock: bool = False,
+    model: str | None = None,
+    workspace: Path | None = None,
+    backend: str = "cursor",
+) -> AgentBackend:
+    """Factory function for creating agent backends. Exposed for testing."""
     if mock:
-        logging.getLogger("rtw").info("Using stub LLM client for --mock mode")
-        return StubLLMClient(responses=_MOCK_RESPONSES)
-    return CursorAgentClient(workspace, model=model) if model else CursorAgentClient(workspace)
+        return MockAgentBackend()
+
+    resolved_model = model or os.environ.get("RTW_MODEL")
+    return _make_agent_backend(backend, workspace or Path.cwd(), resolved_model)
+
+
+def _make_agent_backend(backend: str, workspace: Path, model: str | None) -> AgentBackend:
+    """Construct the appropriate agent backend."""
+    match backend:
+        case "cursor":
+            return CursorAgentBackend(workspace, model=model)
+        case "codex":
+            raise NotImplementedError(
+                "Codex backend not yet implemented. See src/rtw/agent/codex.py for the stub."
+            )
+        case "claude":
+            raise NotImplementedError(
+                "Claude Code backend not yet implemented. See src/rtw/agent/claude.py for the stub."
+            )
+        case _:
+            raise ValueError(f"Unknown backend: {backend}")
 
 
 def _report_final_status(logger: logging.Logger, final_state: SharedState) -> int:
@@ -61,14 +147,14 @@ def _report_final_status(logger: logging.Logger, final_state: SharedState) -> in
             return 1
 
 
-def create_architect_flow(llm_client, on_state_change=None) -> Flow:
-    """Wire up the Plan -> Build -> Review loop."""
-    planner = PlannerNode(llm_client)
-    builder = BuilderNode(llm_client)
-    reviewer = ReviewerNode(llm_client)
+def create_flow(agent: AgentBackend, on_state_change=None) -> Flow:
+    """Wire up the Plan -> Execute -> Review loop."""
+    planner = PlannerNode(agent)
+    executor = ExecutorNode(agent)
+    reviewer = ReviewerNode(agent)
 
-    planner.on("build") >> builder
-    builder.on("review") >> reviewer
+    planner.on("build") >> executor
+    executor.on("review") >> reviewer
     reviewer.on("plan") >> planner
 
     return Flow(start=planner, name="architect", on_state_change=on_state_change)
@@ -78,8 +164,9 @@ def run_task(
     task_file: Path,
     workspace: Path,
     max_iterations: int,
-    mock: bool = False,
     model: str | None = None,
+    backend: str = "cursor",
+    mock: bool = False,
 ) -> int:
     """Execute the architect loop on a task file."""
     logger = logging.getLogger("rtw")
@@ -103,8 +190,9 @@ def run_task(
         max_iterations=max_iterations,
     )
 
-    llm_client = _make_llm_client(mock, model, workspace)
-    flow = create_architect_flow(llm_client, on_state_change=storage.save)
+    agent = create_agent(mock=mock, model=model, workspace=workspace, backend=backend)
+    flow = create_flow(agent, on_state_change=storage.save)
+    logger.info("Using %s backend", agent.name)
 
     logger.info("=" * 50)
     logger.info("Starting architect loop")
@@ -127,10 +215,11 @@ def run_task(
 def resume_run(
     workspace: Path,
     run_id: str | None = None,
-    mock: bool = False,
     model: str | None = None,
+    backend: str = "cursor",
+    mock: bool = False,
 ) -> int:
-    """Resume a previous run from persisted state and continue the architect loop."""
+    """Resume a previous run from persisted state."""
     logger = logging.getLogger("rtw")
 
     if run_id:
@@ -139,7 +228,7 @@ def resume_run(
         storage = StateStorage.get_latest_run(workspace)
         if not storage:
             logger.error(
-                "No previous runs found in %s. If the run is in another project, use: rtw resume -w /path/to/that/project",
+                "No previous runs found in %s. Use: rtw resume -w /path/to/project",
                 workspace,
             )
             return 1
@@ -147,9 +236,7 @@ def resume_run(
     state = storage.load()
     if not state:
         logger.error(
-            "Could not load state from run %s (missing or invalid state file). "
-            "Check that -w points to the project that contains this run (e.g. rtw resume -w /path/to/rts --run-id %s).",
-            storage.run_id,
+            "Could not load state from run %s. Check -w points to the correct project.",
             storage.run_id,
         )
         return 1
@@ -157,11 +244,10 @@ def resume_run(
     logger.info("Resuming run: %s", storage.run_id)
     logger.info("Previous status: %s, Iteration: %d", state.status.value, state.current_iteration)
 
-    # Reset so the loop continues; planner will set PLANNING and start next iteration
     state.status = FlowStatus.PENDING
 
-    llm_client = _make_llm_client(mock, model, Path(state.workspace))
-    flow = create_architect_flow(llm_client, on_state_change=storage.save)
+    agent = create_agent(mock=mock, model=model, workspace=Path(state.workspace), backend=backend)
+    flow = create_flow(agent, on_state_change=storage.save)
 
     logger.info("=" * 50)
     logger.info("Continuing architect loop")
@@ -209,15 +295,17 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  rtw -V                           # Show version
-  rtw run task.md                  # Run architect loop on task.md
+  rtw run task.md                  # Run architect loop
   rtw run task.md --max-iter 5     # Limit to 5 iterations
-  rtw run task.md --mock           # Run with mock LLM (no Cursor agent)
+  rtw run task.md --backend codex  # Use Codex CLI backend
   rtw list                         # List previous runs
-  rtw resume                       # Resume latest run (in current dir)
-  rtw resume --mock                # Resume latest run with mock LLM
-  rtw resume -w /path/to/project   # Resume run in another project
-  rtw resume --run-id 20240101_120000  # Resume specific run
+  rtw resume                       # Resume latest run
+  rtw resume --run-id 20240101_120000
+
+Backends:
+  cursor  - Cursor Agent CLI (default)
+  codex   - OpenAI Codex CLI [stub]
+  claude  - Claude Code CLI [stub]
         """,
     )
 
@@ -233,51 +321,45 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_common_args(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "--model",
+            type=str,
+            default=None,
+            help="Agent model (e.g. sonnet-4.6). Overrides RTW_MODEL env.",
+        )
+        subparser.add_argument(
+            "--backend",
+            type=str,
+            default="cursor",
+            choices=list(KNOWN_BACKENDS),
+            help="Agent backend (default: cursor)",
+        )
+        subparser.add_argument(
+            "--mock",
+            action="store_true",
+            help="Use mock agent (for testing)",
+        )
+
     run_parser = subparsers.add_parser("run", help="Run architect loop on a task file")
     run_parser.add_argument("task_file", type=Path, help="Path to task.md file")
     run_parser.add_argument("--max-iter", type=int, default=10, help="Max iterations (default: 10)")
-    run_parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Cursor agent model (e.g. sonnet-4.6). Overrides RTW_MODEL env.",
-    )
-    run_parser.add_argument("--mock", action="store_true", help="Use mock LLM client (for testing)")
+    add_common_args(run_parser)
 
     subparsers.add_parser("list", help="List previous runs")
 
     resume_parser = subparsers.add_parser("resume", help="Resume a previous run")
     resume_parser.add_argument("--run-id", type=str, help="Specific run ID to resume")
-    resume_parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Cursor agent model. Overrides RTW_MODEL env.",
-    )
-    resume_parser.add_argument(
-        "--mock", action="store_true", help="Use mock LLM client (for testing)"
-    )
+    add_common_args(resume_parser)
 
     args = parser.parse_args()
     setup_logging(args.verbose)
 
     model_arg = getattr(args, "model", None)
+    backend_arg = getattr(args, "backend", "cursor")
     mock_arg = getattr(args, "mock", False)
+
     resolved_model = model_arg or os.environ.get("RTW_MODEL")
-    if resolved_model and not mock_arg:
-        skip_validation = os.environ.get("RTW_SKIP_MODEL_VALIDATION", "").strip() not in ("", "0")
-        if not skip_validation and resolved_model not in KNOWN_MODELS:
-            print(
-                f"Error: unknown model {resolved_model!r}.\n"
-                f"Available models: {', '.join(sorted(KNOWN_MODELS))}\n"
-                "Set RTW_SKIP_MODEL_VALIDATION=1 to bypass if this list is stale.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if resolved_model == "auto":
-            logging.getLogger("rtw").warning(
-                "Model 'auto' may return empty JSON responses; consider using 'sonnet-4.6' for reliability."
-            )
 
     match args.command:
         case "run":
@@ -285,8 +367,9 @@ Examples:
                 args.task_file,
                 args.workspace,
                 args.max_iter,
-                mock=args.mock,
                 model=resolved_model,
+                backend=backend_arg,
+                mock=mock_arg,
             )
         case "list":
             return list_runs(args.workspace)
@@ -294,8 +377,9 @@ Examples:
             return resume_run(
                 args.workspace,
                 run_id=args.run_id,
-                mock=args.mock,
                 model=resolved_model,
+                backend=backend_arg,
+                mock=mock_arg,
             )
         case _:
             return 0

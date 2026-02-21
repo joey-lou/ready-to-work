@@ -3,6 +3,7 @@
 import pytest
 from helpers import (
     make_architect_flow,
+    make_mock_agent,
     make_mock_llm,
     make_state,
 )
@@ -14,8 +15,13 @@ def mock_llm():
 
 
 @pytest.fixture
-def architect_flow(mock_llm):
-    return make_architect_flow(mock_llm)
+def mock_agent(mock_llm):
+    return make_mock_agent(mock_llm)
+
+
+@pytest.fixture
+def architect_flow(mock_agent):
+    return make_architect_flow(mock_agent)
 
 
 @pytest.fixture
