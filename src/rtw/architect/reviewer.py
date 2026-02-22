@@ -21,7 +21,7 @@ Evaluate build results against original requirements. Your review guides the nex
 1. COMPARE: Check each requirement against what was built
 2. VERIFY: Look at actual file contents to confirm implementation quality
 3. ASSESS: Identify what works, what's missing, what needs fixing
-4. GUIDE: Provide actionable feedback that helps the next iteration succeed
+4. GUIDE: Provide actionable feedback for the next iteration
 
 ## Verdict Guidelines
 - "approve": All core requirements met, code is functional and reasonably clean
@@ -39,36 +39,17 @@ Return ONLY valid JSON (no markdown, no explanation):
 {
     "verdict": "approve|iterate|blocked",
     "score": 0-100,
-    "summary": "Brief assessment of the work",
-    "requirements_status": [
-        {"requirement": "description", "status": "met|partial|missing", "notes": "details"}
-    ],
-    "strengths": ["What was done well - be specific"],
-    "issues": [
-        {
-            "severity": "critical|major|minor",
-            "description": "What's wrong",
-            "suggestion": "How to fix it",
-            "blocks_approval": true|false
-        }
-    ],
-    "feedback": {
-        "what_worked": ["Approaches that succeeded - keep doing these"],
-        "what_failed": ["Approaches that didn't work - avoid these"],
-        "specific_fixes": ["Exact changes needed for next iteration"],
-        "priority_order": ["Most important fix first, then second, etc."]
-    },
-    "lessons_learned": ["Key insights to remember for future iterations"],
-    "blocking_reason": "If verdict is 'blocked', explain why human intervention is needed"
+    "summary": "One-line assessment of the work",
+    "assessment": "Detailed markdown assessment. Cover: what was built correctly, what is missing or broken, and specific recommendations for the next iteration. Write freely -- this will be read by the planning agent to guide its next steps.",
+    "blocking_reason": "If verdict is 'blocked', explain why human intervention is needed. Otherwise null."
 }"""
 
 
 class ReviewerNode(Node):
-    """
-    Reviews build results against requirements and decides next action.
+    """Reviews build results against requirements and decides next action.
 
-    Inputs: Build results, original task, plan
-    Outputs: Review verdict (approve/iterate/blocked) with feedback
+    Only machine-parses verdict/score/blocking_reason for routing.
+    The full assessment flows as text to the planner.
     """
 
     def __init__(self, agent: AgentBackend):
@@ -81,7 +62,6 @@ class ReviewerNode(Node):
 
         record = state.current_record()
 
-        # Read actual file contents for artifacts (within size limits)
         artifact_contents = self._read_artifact_contents(state.workspace, state.artifacts)
 
         return {
@@ -152,41 +132,27 @@ class ReviewerNode(Node):
 
         verdict = exec_result.get("verdict", "iterate")
         score = exec_result.get("score", 0)
+        summary = exec_result.get("summary", "")
 
         logger.info("Review verdict: %s (score: %s)", verdict, score)
 
-        # Capture lessons learned from reviewer
-        for lesson in exec_result.get("lessons_learned", []):
-            state.add_lesson("insight", lesson)
-
-        # Capture strengths as successes
-        for strength in exec_result.get("strengths", []):
-            state.add_lesson("success", strength)
-
-        # Capture critical issues as failures
-        for issue in exec_result.get("issues", []):
-            if issue.get("severity") == "critical":
-                state.add_lesson("failure", issue.get("description", "Unknown issue"))
+        if summary:
+            state.add_lesson("review", f"[score={score}] {summary}")
 
         match verdict:
             case "approve":
                 state.status = FlowStatus.COMPLETED
-                state.final_summary = exec_result.get("summary", "Task completed successfully")
+                state.final_summary = summary or "Task completed successfully"
                 logger.info("Task approved - flow complete")
                 return None
             case "blocked":
                 state.status = FlowStatus.BLOCKED
                 state.blocking_reason = exec_result.get("blocking_reason", "Unknown blocking issue")
-                state.add_lesson("blocker_resolved", f"Blocked: {state.blocking_reason}")
                 logger.warning("Task blocked: %s", state.blocking_reason)
                 return None
             case _:  # iterate
-                feedback = exec_result.get("feedback", {})
-                if isinstance(feedback, dict):
-                    summary = "; ".join(feedback.get("specific_fixes", [])[:2])
-                else:
-                    summary = str(feedback)[:100]
-                logger.info("Iteration needed. Feedback: %s", summary)
+                assessment = exec_result.get("assessment", summary)
+                logger.info("Iteration needed: %s", (assessment or "")[:100])
                 state.touch()
                 return "plan"
 
@@ -197,7 +163,7 @@ class ReviewerNode(Node):
             budget_guidance = (
                 "LOW BUDGET: Focus only on critical issues. Minor improvements can be deferred."
             )
-        elif iterations_remaining == 1:
+        if iterations_remaining == 1:
             budget_guidance = "LAST ITERATION: Only block for truly critical problems. Approve if core functionality works."
 
         parts = [
@@ -213,17 +179,15 @@ class ReviewerNode(Node):
         for artifact in context.get("artifacts", []):
             parts.append(f"- {artifact['action']}: {artifact['path']}")
 
-        # Include actual file contents for informed review
         artifact_contents = context.get("artifact_contents", {})
         if artifact_contents:
             parts.append("\n# File Contents (for verification)\n")
             for path, content in artifact_contents.items():
-                if content.startswith("("):  # Error or skip message
+                if content.startswith("("):
                     parts.append(f"## {path}\n{content}\n")
                 else:
                     parts.append(f"## {path}\n```\n{content}\n```\n")
 
-        # Include cumulative lessons
         if context.get("lessons_learned"):
             parts.append(f"\n{context['lessons_learned']}")
 

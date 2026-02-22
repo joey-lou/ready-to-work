@@ -55,7 +55,6 @@ def test_persistence_failure_does_not_crash_flow():
     flow = make_architect_flow(agent, on_state_change=bad_save)
     state = make_state()
 
-    # Should not raise; flow should still complete
     result = flow.run(state)
     assert result.status == FlowStatus.COMPLETED
 
@@ -91,7 +90,6 @@ def _run_resume_from(prior_status: FlowStatus) -> SharedState:
     flow = make_architect_flow(agent)
     state = make_state()
     state.status = prior_status
-    # Reset to PENDING so flow restarts from planner (mirrors resume_run behaviour)
     state.status = FlowStatus.PENDING
     return flow.run(state)
 
@@ -101,8 +99,8 @@ def test_resume_from_planning():
     assert result.status == FlowStatus.COMPLETED
 
 
-def test_resume_from_building():
-    result = _run_resume_from(FlowStatus.BUILDING)
+def test_resume_from_executing():
+    result = _run_resume_from(FlowStatus.EXECUTING)
     assert result.status == FlowStatus.COMPLETED
 
 
@@ -121,10 +119,8 @@ def test_completed_state_does_not_re_run():
     state = make_state()
     state.status = FlowStatus.COMPLETED
 
-    # Caller (resume_run) resets to PENDING before running – simulate that NOT happening
-    # and just verify the state is not mutated when we inspect it directly.
     assert state.status == FlowStatus.COMPLETED
-    assert state.current_iteration == 0  # nothing ran
+    assert state.current_iteration == 0
 
 
 # ---------------------------------------------------------------------------
@@ -132,20 +128,19 @@ def test_completed_state_does_not_re_run():
 # ---------------------------------------------------------------------------
 
 
-def test_planner_stores_json_with_error_key_and_builds():
+def test_planner_stores_json_with_error_key_and_executes():
     llm = MockLLMClient(responses={"architect": '{"error": "LLM down"}'})
     agent = MockAgentBackend(llm)
     planner = PlannerNode(agent)
     executor_mock = MagicMock()
     executor_mock.name = "MockExecutor"
     executor_mock.successors = {}
-    planner.on("build") >> executor_mock
+    planner.on("execute") >> executor_mock
 
     state = make_state()
     action = planner.run(state)
 
-    # Planner transitions to 'build' — the JSON happened to contain an 'error' key
-    assert action == "build"
+    assert action == "execute"
     assert state.current_plan.get("error") == "LLM down"
 
 
@@ -228,15 +223,13 @@ def test_executor_with_none_plan_does_not_crash():
     agent = MockAgentBackend(llm)
     executor = ExecutorNode(agent)
     state = make_state()
-    state.status = FlowStatus.BUILDING
+    state.status = FlowStatus.EXECUTING
     state.current_plan = None
     state.start_iteration()
 
-    # prep should handle None plan
     context = executor.prep(state)
     assert context["steps"] == []
 
-    # exec with empty steps should return success
     result = executor.exec(context)
     assert result.success
 
@@ -247,7 +240,7 @@ def test_executor_with_none_plan_does_not_crash():
 
 
 def test_reviewer_unknown_verdict_falls_through_to_iterate():
-    unknown_verdict = '{"verdict": "unknown_value", "score": 50, "summary": "?", "strengths": [], "issues": [], "feedback": "try again", "blocking_reason": null}'
+    unknown_verdict = '{"verdict": "unknown_value", "score": 50, "summary": "?", "assessment": "Unclear.", "blocking_reason": null}'
     llm = make_mock_llm(verdict_response=unknown_verdict)
     agent = make_mock_agent(llm)
 
@@ -272,7 +265,6 @@ def test_two_iteration_flow_approve_on_second_pass():
     verdicts = [ITERATE_RESPONSE, APPROVE_RESPONSE]
 
     def side_effect(prompt, system):
-        # Route based on which system prompt is active
         if system and "code reviewer" in system.lower():
             idx = review_calls["n"]
             review_calls["n"] += 1
@@ -319,7 +311,7 @@ def test_resume_after_failed_status_completes():
     flow = make_architect_flow(agent)
     state = make_state()
     state.status = FlowStatus.FAILED
-    state.status = FlowStatus.PENDING  # simulate resume_run reset
+    state.status = FlowStatus.PENDING
 
     result = flow.run(state)
     assert result.status == FlowStatus.COMPLETED
@@ -341,7 +333,6 @@ def test_existing_history_and_artifacts_persist_through_rerun():
 
     result = flow.run(state)
 
-    # Original artifact still present
     paths = [a.path for a in result.artifacts]
     assert "existing.py" in paths
 
@@ -363,7 +354,6 @@ def test_on_state_change_called_per_node():
     state = make_state()
     flow.run(state)
 
-    # At least 3 calls: after planner, executor, reviewer
     assert len(call_log) >= 3
 
 
@@ -382,7 +372,6 @@ def test_flow_with_no_successors_terminates():
     state = make_state()
 
     result = flow.run(state)
-    # Should return without error; status remains pending (node didn't change it)
     assert result is state
 
 
@@ -450,7 +439,7 @@ def test_flow_with_no_callback_runs_cleanly():
 
 
 def test_reviewer_with_score_none_does_not_crash():
-    no_score = '{"verdict": "approve", "score": null, "summary": "OK", "strengths": [], "issues": [], "feedback": "", "blocking_reason": null}'
+    no_score = '{"verdict": "approve", "score": null, "summary": "OK", "assessment": "Fine.", "blocking_reason": null}'
     llm = make_mock_llm(verdict_response=no_score)
     agent = make_mock_agent(llm)
     flow = make_architect_flow(agent)
@@ -461,11 +450,11 @@ def test_reviewer_with_score_none_does_not_crash():
 
 
 # ---------------------------------------------------------------------------
-# 25. planner with empty task_content still transitions to build
+# 25. planner with empty task_content still transitions to execute
 # ---------------------------------------------------------------------------
 
 
-def test_planner_with_empty_task_content_transitions_to_build():
+def test_planner_with_empty_task_content_transitions_to_execute():
     llm = make_mock_llm()
     agent = make_mock_agent(llm)
     flow = make_architect_flow(agent)
@@ -483,14 +472,13 @@ def test_planner_with_empty_task_content_transitions_to_build():
 def test_executor_empty_steps_records_nothing():
     llm = MockLLMClient(
         responses={
-            "architect": '{"summary": "Empty", "steps": [], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
+            "architect": '{"summary": "Empty", "steps": []}',
             "reviewer": APPROVE_RESPONSE,
         }
     )
     agent = MockAgentBackend(llm)
     flow = make_architect_flow(agent)
     state = make_state()
-    # Pre-existing artifact to confirm it's not cleared
     state.add_artifact("existing.py", "created")
 
     result = flow.run(state)
@@ -512,7 +500,6 @@ def test_resume_after_blocked_with_higher_limit_completes():
     result = flow.run(state)
     assert result.status == FlowStatus.BLOCKED
 
-    # Simulate resume: reset status and increase max_iterations
     llm2 = make_mock_llm()
     agent2 = make_mock_agent(llm2)
     flow2 = make_architect_flow(agent2)

@@ -5,11 +5,13 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+MAX_LESSONS = 50
+
 
 class FlowStatus(Enum):
     PENDING = "pending"
     PLANNING = "planning"
-    BUILDING = "building"
+    EXECUTING = "executing"
     REVIEWING = "reviewing"
     COMPLETED = "completed"
     BLOCKED = "blocked"
@@ -37,7 +39,7 @@ class LessonLearned:
     """A lesson learned during the architect loop."""
 
     iteration: int
-    category: str  # "success", "failure", "insight", "blocker_resolved"
+    category: str  # "success", "failure", "insight", "review"
     description: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -58,7 +60,6 @@ class SharedState:
     artifacts: list[Artifact] = field(default_factory=list)
     history: list[IterationRecord] = field(default_factory=list)
 
-    # Cumulative memory across all iterations
     lessons_learned: list[LessonLearned] = field(default_factory=list)
 
     blocking_reason: str | None = None
@@ -150,11 +151,17 @@ class SharedState:
         return state
 
     def add_artifact(self, path: str, action: str) -> None:
+        """Upsert artifact by path -- keeps the latest action per file."""
+        for i, a in enumerate(self.artifacts):
+            if a.path == path:
+                self.artifacts[i] = Artifact(path=path, action=action)
+                self.touch()
+                return
         self.artifacts.append(Artifact(path=path, action=action))
         self.touch()
 
     def add_lesson(self, category: str, description: str) -> None:
-        """Add a lesson learned to cumulative memory."""
+        """Add a lesson learned, capping at MAX_LESSONS (oldest trimmed)."""
         self.lessons_learned.append(
             LessonLearned(
                 iteration=self.current_iteration,
@@ -162,6 +169,8 @@ class SharedState:
                 description=description,
             )
         )
+        if len(self.lessons_learned) > MAX_LESSONS:
+            self.lessons_learned = self.lessons_learned[-MAX_LESSONS:]
         self.touch()
 
     def get_lessons_summary(self) -> str:
@@ -211,14 +220,7 @@ class SharedState:
         return "\n".join(lines)
 
     def get_step_results(self, iteration: int | None = None) -> list[dict[str, Any]]:
-        """Get step-level execution results for an iteration.
-
-        Args:
-            iteration: Specific iteration number, or None for current.
-
-        Returns:
-            List of step result dicts with step_id, status, action_taken, etc.
-        """
+        """Get step-level execution results for an iteration."""
         target_iter = iteration or self.current_iteration
         for record in self.history:
             if record.iteration == target_iter and record.build_result:

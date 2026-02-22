@@ -62,8 +62,8 @@ def test_flow_max_iterations():
 def test_architect_flow_mock():
     """Test full architect flow with mock agent."""
     mock_responses = {
-        "architect": '{"summary": "Test plan", "steps": [{"id": 1, "description": "Do thing", "type": "create", "target": "file.py", "details": "details"}], "dependencies": [], "risks": [], "estimated_complexity": "low"}',
-        "reviewer": '{"verdict": "approve", "score": 90, "summary": "Good job", "strengths": ["works"], "issues": [], "feedback": "", "blocking_reason": null}',
+        "architect": '{"summary": "Test plan", "steps": [{"id": 1, "description": "Do thing", "type": "create", "target": "file.py", "details": "details"}]}',
+        "reviewer": '{"verdict": "approve", "score": 90, "summary": "Good job", "assessment": "Well done.", "blocking_reason": null}',
     }
 
     llm = MockLLMClient(responses=mock_responses)
@@ -73,7 +73,7 @@ def test_architect_flow_mock():
     executor = ExecutorNode(agent)
     reviewer = ReviewerNode(agent)
 
-    planner.on("build") >> executor
+    planner.on("execute") >> executor
     executor.on("review") >> reviewer
     reviewer.on("plan") >> planner
 

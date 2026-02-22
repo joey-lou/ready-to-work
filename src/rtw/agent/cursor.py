@@ -10,12 +10,11 @@ CLI usage:
 
 import json
 import logging
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-from .base import AgentBackend, AgentError, FileChange, StepResult, StepStatus
+from .base import AgentError, FileChange, StepResult, StepStatus, SubprocessAgentBackend
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ def _find_cursor_cli() -> str:
     raise AgentError("Cursor CLI not found. Install from https://cursor.com")
 
 
-class CursorAgentBackend(AgentBackend):
+class CursorAgentBackend(SubprocessAgentBackend):
     """Agent backend using Cursor Agent CLI."""
 
     def __init__(
@@ -40,7 +39,7 @@ class CursorAgentBackend(AgentBackend):
         timeout: int | None = None,
     ):
         super().__init__(workspace, model, timeout)
-        self.model = model or os.environ.get("RTW_MODEL", DEFAULT_MODEL)
+        self.model = model or DEFAULT_MODEL
         self._cli_cmd = _find_cursor_cli()
 
     @property

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from rtw import __version__
-from rtw.agent import AgentBackend, CursorAgentBackend
+from rtw.agent import AgentBackend, CursorAgentBackend, StepResult, StepStatus
 from rtw.architect import ExecutorNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, SharedState
 from rtw.storage import StateStorage
@@ -26,22 +26,13 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 class MockAgentBackend(AgentBackend):
-    """Mock backend for testing without real agent calls."""
-
-    def __init__(self):
-        # Don't call super().__init__ - we don't need workspace/model/timeout
-        self.workspace = Path.cwd()
-        self.model = None
-        self.timeout = 60
+    """Lightweight mock for `--mock` flag. No subprocess or LLM calls."""
 
     @property
     def name(self) -> str:
         return "mock"
 
-    # Override high-level methods directly (skip subprocess layer)
     def execute_step(self, step, workspace, context=None):
-        from rtw.agent import StepResult, StepStatus
-
         return StepResult(
             step_id=step.get("id", 0),
             status=StepStatus.COMPLETED,
@@ -63,36 +54,16 @@ class MockAgentBackend(AgentBackend):
                         "details": "details",
                     }
                 ],
-                "dependencies": [],
-                "risks": [],
-                "estimated_complexity": "low",
             }
         if system and "reviewer" in system.lower():
             return {
                 "verdict": "approve",
                 "score": 90,
                 "summary": "Good",
-                "strengths": [],
-                "issues": [],
-                "feedback": "",
+                "assessment": "Everything looks good.",
                 "blocking_reason": None,
             }
         return {"mock": True}
-
-    # Implement abstract methods (not used since we override execute_step/complete_json)
-    def _build_exec_command(self, prompt, workspace):
-        return ["echo", "mock"]
-
-    def _build_json_command(self, prompt):
-        return ["echo", "{}"]
-
-    def _parse_exec_output(self, output, step_id, description):
-        from rtw.agent import StepResult, StepStatus
-
-        return StepResult(step_id=step_id, status=StepStatus.COMPLETED, description=description)
-
-    def _parse_json_output(self, output):
-        return {}
 
 
 def create_agent(
@@ -153,11 +124,32 @@ def create_flow(agent: AgentBackend, on_state_change=None) -> Flow:
     executor = ExecutorNode(agent)
     reviewer = ReviewerNode(agent)
 
-    planner.on("build") >> executor
+    planner.on("execute") >> executor
     executor.on("review") >> reviewer
     reviewer.on("plan") >> planner
 
     return Flow(start=planner, name="architect", on_state_change=on_state_change)
+
+
+def _execute_flow(
+    flow: Flow,
+    state: SharedState,
+    storage: StateStorage,
+    logger: logging.Logger,
+) -> int:
+    """Run a flow with consistent interrupt/error handling and state persistence."""
+    try:
+        final_state = flow.run(state)
+    except KeyboardInterrupt:
+        logger.info("\nInterrupted by user")
+        storage.save(state)
+        return 130
+    except Exception as e:
+        logger.error("Flow failed: %s", e)
+        storage.save(state)
+        return 1
+
+    return _report_final_status(logger, final_state)
 
 
 def run_task(
@@ -198,18 +190,7 @@ def run_task(
     logger.info("Starting architect loop")
     logger.info("=" * 50)
 
-    try:
-        final_state = flow.run(state)
-    except KeyboardInterrupt:
-        logger.info("\nInterrupted by user")
-        storage.save(state)
-        return 130
-    except Exception as e:
-        logger.error("Flow failed: %s", e)
-        storage.save(state)
-        return 1
-
-    return _report_final_status(logger, final_state)
+    return _execute_flow(flow, state, storage, logger)
 
 
 def resume_run(
@@ -253,18 +234,7 @@ def resume_run(
     logger.info("Continuing architect loop")
     logger.info("=" * 50)
 
-    try:
-        final_state = flow.run(state)
-    except KeyboardInterrupt:
-        logger.info("\nInterrupted by user")
-        storage.save(state)
-        return 130
-    except Exception as e:
-        logger.error("Flow failed: %s", e)
-        storage.save(state)
-        return 1
-
-    return _report_final_status(logger, final_state)
+    return _execute_flow(flow, state, storage, logger)
 
 
 def list_runs(workspace: Path) -> int:
@@ -359,15 +329,13 @@ Backends:
     backend_arg = getattr(args, "backend", "cursor")
     mock_arg = getattr(args, "mock", False)
 
-    resolved_model = model_arg or os.environ.get("RTW_MODEL")
-
     match args.command:
         case "run":
             return run_task(
                 args.task_file,
                 args.workspace,
                 args.max_iter,
-                model=resolved_model,
+                model=model_arg,
                 backend=backend_arg,
                 mock=mock_arg,
             )
@@ -377,7 +345,7 @@ Backends:
             return resume_run(
                 args.workspace,
                 run_id=args.run_id,
-                model=resolved_model,
+                model=model_arg,
                 backend=backend_arg,
                 mock=mock_arg,
             )

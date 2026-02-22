@@ -16,7 +16,7 @@ def test_round_trip_all_fields():
         task_file="task.md",
         task_content="Do something",
         workspace="/tmp",
-        status=FlowStatus.BUILDING,
+        status=FlowStatus.EXECUTING,
         current_iteration=2,
         max_iterations=5,
         blocking_reason="partial block",
@@ -34,7 +34,7 @@ def test_round_trip_all_fields():
     assert restored.task_file == state.task_file
     assert restored.task_content == state.task_content
     assert restored.workspace == state.workspace
-    assert restored.status == FlowStatus.BUILDING
+    assert restored.status == FlowStatus.EXECUTING
     assert restored.current_iteration == 3  # start_iteration increments
     assert restored.max_iterations == 5
     assert restored.blocking_reason == "partial block"
@@ -182,17 +182,16 @@ def test_touch_updates_updated_at():
 
 
 # ---------------------------------------------------------------------------
-# add_artifact() allows duplicate paths (by design)
+# add_artifact() upserts by path (keeps latest action per file)
 # ---------------------------------------------------------------------------
 
 
-def test_add_artifact_allows_duplicates():
+def test_add_artifact_upserts_by_path():
     state = SharedState(task_file="t.md", task_content="x", workspace="/tmp")
     state.add_artifact("file.py", "created")
     state.add_artifact("file.py", "modified")
-    assert len(state.artifacts) == 2
-    assert state.artifacts[0].action == "created"
-    assert state.artifacts[1].action == "modified"
+    assert len(state.artifacts) == 1
+    assert state.artifacts[0].action == "modified"
 
 
 # ---------------------------------------------------------------------------

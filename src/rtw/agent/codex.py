@@ -12,18 +12,17 @@ See: https://developers.openai.com/codex/cli/reference/
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
-from .base import AgentBackend, FileChange, StepResult, StepStatus
+from .base import FileChange, StepResult, StepStatus, SubprocessAgentBackend
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5.3-codex"
 
 
-class CodexAgentBackend(AgentBackend):
+class CodexAgentBackend(SubprocessAgentBackend):
     """Agent backend using OpenAI Codex CLI."""
 
     def __init__(
@@ -33,7 +32,7 @@ class CodexAgentBackend(AgentBackend):
         timeout: int | None = None,
     ):
         super().__init__(workspace, model, timeout)
-        self.model = model or os.environ.get("RTW_MODEL", DEFAULT_MODEL)
+        self.model = model or DEFAULT_MODEL
 
     @property
     def name(self) -> str:

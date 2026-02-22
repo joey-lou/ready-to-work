@@ -150,7 +150,6 @@ def test_resume_run_integration_completes():
     from rtw.cli import resume_run
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create and save initial state
         run_id = "test_resume_run"
         storage = StateStorage(tmpdir, run_id)
         state = SharedState(

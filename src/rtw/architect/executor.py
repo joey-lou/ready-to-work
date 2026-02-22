@@ -41,7 +41,7 @@ class ExecutorNode(Node):
 
     def prep(self, state: SharedState) -> dict[str, Any]:
         """Prepare execution context from current plan."""
-        state.status = FlowStatus.BUILDING
+        state.status = FlowStatus.EXECUTING
 
         # Get steps to execute this iteration
         plan = state.current_plan or {}

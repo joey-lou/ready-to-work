@@ -15,12 +15,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .base import AgentBackend, AgentError, FileChange, StepResult, StepStatus
+from .base import AgentError, FileChange, StepResult, StepStatus, SubprocessAgentBackend
 
 logger = logging.getLogger(__name__)
 
 
-class ClaudeCodeBackend(AgentBackend):
+class ClaudeCodeBackend(SubprocessAgentBackend):
     """Agent backend using Claude Code CLI."""
 
     def __init__(
@@ -30,8 +30,6 @@ class ClaudeCodeBackend(AgentBackend):
         timeout: int | None = None,
     ):
         super().__init__(workspace, model, timeout)
-        # Claude Code may not support model selection via CLI
-        self.model = model
 
     @property
     def name(self) -> str:

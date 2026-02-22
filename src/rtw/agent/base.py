@@ -1,13 +1,8 @@
 """Base abstraction for coding agent backends.
 
-This module defines the interface that all agent backends must implement.
-The key insight: agents should EXECUTE tasks (with tool use, file modifications)
-not just DESCRIBE what they would do.
-
-Supported backends:
-- Cursor Agent CLI (cursor-agent / agent)
-- OpenAI Codex CLI (codex exec)
-- Claude Code CLI (claude -p)
+Two-layer hierarchy:
+- AgentBackend: lean ABC that any backend (subprocess, API, mock) can implement
+- SubprocessAgentBackend: shared infrastructure for backends that wrap CLI tools
 """
 
 import json
@@ -96,28 +91,11 @@ class AgentError(RuntimeError):
 
 
 class AgentBackend(ABC):
+    """Lean interface for coding agent backends.
+
+    Any backend (subprocess-based, API-based, mock) implements these three
+    methods. No subprocess assumptions leak into the interface.
     """
-    Abstract base class for coding agent backends.
-
-    Implementations wrap CLI tools (cursor-agent, codex, claude) that can:
-    1. Read/write files
-    2. Run shell commands
-    3. Search codebases
-    4. Make incremental changes based on feedback
-
-    Common functionality (subprocess, JSON parsing, timeouts) is in the base class.
-    Subclasses only define CLI-specific command building and output parsing.
-    """
-
-    def __init__(
-        self,
-        workspace: Path,
-        model: str | None = None,
-        timeout: int | None = None,
-    ):
-        self.workspace = Path(workspace)
-        self.model = model
-        self.timeout = timeout or int(os.environ.get("RTW_STEP_TIMEOUT", DEFAULT_TIMEOUT))
 
     @property
     @abstractmethod
@@ -125,21 +103,6 @@ class AgentBackend(ABC):
         """Human-readable name of this backend."""
 
     @abstractmethod
-    def _build_exec_command(self, prompt: str, workspace: Path) -> list[str]:
-        """Build CLI command for step execution."""
-
-    @abstractmethod
-    def _build_json_command(self, prompt: str) -> list[str]:
-        """Build CLI command for JSON completion."""
-
-    @abstractmethod
-    def _parse_exec_output(self, output: str, step_id: int, description: str) -> StepResult:
-        """Parse execution output into StepResult."""
-
-    @abstractmethod
-    def _parse_json_output(self, output: str) -> dict[str, Any]:
-        """Parse JSON output from agent."""
-
     def execute_step(
         self,
         step: dict[str, Any],
@@ -147,56 +110,14 @@ class AgentBackend(ABC):
         context: str | None = None,
     ) -> StepResult:
         """Execute a single plan step with full agent capabilities."""
-        step_id = step.get("id", 0)
-        description = step.get("description", "Unknown step")
 
-        prompt = self._build_step_prompt(step, context)
-        cmd = self._build_exec_command(prompt, workspace)
-
-        logger.info("Executing step %d: %s", step_id, description[:60])
-        start_time = time.time()
-
-        try:
-            output = self._run_subprocess(cmd, workspace)
-            duration = time.time() - start_time
-
-            result = self._parse_exec_output(output, step_id, description)
-            result.duration_seconds = duration
-            result.agent_output = output[:2000] if output else None
-
-            logger.info(
-                "Step %d %s (%.1fs)",
-                step_id,
-                result.status.value,
-                duration,
-            )
-            return result
-
-        except AgentError as e:
-            duration = time.time() - start_time
-            logger.error("Step %d failed: %s", step_id, e)
-            return StepResult(
-                step_id=step_id,
-                status=StepStatus.FAILED,
-                description=description,
-                error=str(e),
-                agent_output=e.raw_output[:2000] if e.raw_output else None,
-                duration_seconds=duration,
-            )
-
+    @abstractmethod
     def complete_json(
         self,
         prompt: str,
         system: str | None = None,
     ) -> dict[str, Any]:
         """Generate a JSON-structured completion (for planning/reviewing)."""
-        full_prompt = self._build_json_prompt(prompt, system)
-        cmd = self._build_json_command(full_prompt)
-
-        logger.debug("Invoking %s for JSON completion", self.name)
-
-        output = self._run_subprocess(cmd, self.workspace)
-        return self._parse_json_output(output)
 
     def execute_steps(
         self,
@@ -242,6 +163,104 @@ class AgentBackend(ABC):
             summary=self._summarize_results(results),
         )
 
+    def _summarize_results(self, results: list[StepResult]) -> str:
+        completed = sum(1 for r in results if r.status == StepStatus.COMPLETED)
+        failed = sum(1 for r in results if r.status == StepStatus.FAILED)
+        skipped = sum(1 for r in results if r.status == StepStatus.SKIPPED)
+
+        parts = [f"{completed} completed"]
+        if failed:
+            parts.append(f"{failed} failed")
+        if skipped:
+            parts.append(f"{skipped} skipped")
+
+        return f"Steps: {', '.join(parts)}"
+
+
+class SubprocessAgentBackend(AgentBackend):
+    """Base class for backends that wrap CLI tools via subprocess.
+
+    Subclasses only define CLI-specific command building and output parsing.
+    Subprocess execution, JSON extraction, and timeouts are handled here.
+    """
+
+    def __init__(
+        self,
+        workspace: Path,
+        model: str | None = None,
+        timeout: int | None = None,
+    ):
+        self.workspace = Path(workspace)
+        self.model = model
+        self.timeout = timeout or int(os.environ.get("RTW_STEP_TIMEOUT", DEFAULT_TIMEOUT))
+
+    @abstractmethod
+    def _build_exec_command(self, prompt: str, workspace: Path) -> list[str]:
+        """Build CLI command for step execution."""
+
+    @abstractmethod
+    def _build_json_command(self, prompt: str) -> list[str]:
+        """Build CLI command for JSON completion."""
+
+    @abstractmethod
+    def _parse_exec_output(self, output: str, step_id: int, description: str) -> StepResult:
+        """Parse execution output into StepResult."""
+
+    @abstractmethod
+    def _parse_json_output(self, output: str) -> dict[str, Any]:
+        """Parse JSON output from agent."""
+
+    def execute_step(
+        self,
+        step: dict[str, Any],
+        workspace: Path,
+        context: str | None = None,
+    ) -> StepResult:
+        step_id = step.get("id", 0)
+        description = step.get("description", "Unknown step")
+
+        prompt = self._build_step_prompt(step, context)
+        cmd = self._build_exec_command(prompt, workspace)
+
+        logger.info("Executing step %d: %s", step_id, description[:60])
+        start_time = time.time()
+
+        try:
+            output = self._run_subprocess(cmd, workspace)
+            duration = time.time() - start_time
+
+            result = self._parse_exec_output(output, step_id, description)
+            result.duration_seconds = duration
+            result.agent_output = output[:2000] if output else None
+
+            logger.info("Step %d %s (%.1fs)", step_id, result.status.value, duration)
+            return result
+
+        except AgentError as e:
+            duration = time.time() - start_time
+            logger.error("Step %d failed: %s", step_id, e)
+            return StepResult(
+                step_id=step_id,
+                status=StepStatus.FAILED,
+                description=description,
+                error=str(e),
+                agent_output=e.raw_output[:2000] if e.raw_output else None,
+                duration_seconds=duration,
+            )
+
+    def complete_json(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> dict[str, Any]:
+        full_prompt = self._build_json_prompt(prompt, system)
+        cmd = self._build_json_command(full_prompt)
+
+        logger.debug("Invoking %s for JSON completion", self.name)
+
+        output = self._run_subprocess(cmd, self.workspace)
+        return self._parse_json_output(output)
+
     def _run_subprocess(self, cmd: list[str], cwd: Path) -> str:
         """Run a subprocess and return stdout. Common error handling."""
         try:
@@ -264,7 +283,6 @@ class AgentBackend(ABC):
             raise AgentError(f"{self.name} CLI not found. Check installation.") from e
 
     def _build_step_prompt(self, step: dict[str, Any], context: str | None) -> str:
-        """Build prompt for executing a single step."""
         step_id = step.get("id", "?")
         description = step.get("description", "")
         target = step.get("target", "")
@@ -284,27 +302,12 @@ class AgentBackend(ABC):
         return "\n".join(p for p in parts if p)
 
     def _build_json_prompt(self, prompt: str, system: str | None) -> str:
-        """Build prompt for JSON completion."""
         parts = []
         if system:
             parts.append(f"<system>\n{system}\n</system>\n")
         parts.append(prompt)
         parts.append("\nRespond with valid JSON only. No markdown, no explanation.")
         return "\n".join(parts)
-
-    def _summarize_results(self, results: list[StepResult]) -> str:
-        """Generate a summary of step execution."""
-        completed = sum(1 for r in results if r.status == StepStatus.COMPLETED)
-        failed = sum(1 for r in results if r.status == StepStatus.FAILED)
-        skipped = sum(1 for r in results if r.status == StepStatus.SKIPPED)
-
-        parts = [f"{completed} completed"]
-        if failed:
-            parts.append(f"{failed} failed")
-        if skipped:
-            parts.append(f"{skipped} skipped")
-
-        return f"Steps: {', '.join(parts)}"
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         """Extract JSON from text, handling various formats."""
@@ -313,13 +316,11 @@ class AgentBackend(ABC):
 
         text = text.strip()
 
-        # Try direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Try extracting from markdown code blocks
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
@@ -330,7 +331,6 @@ class AgentBackend(ABC):
         except json.JSONDecodeError:
             pass
 
-        # Try finding JSON object boundaries
         first = text.find("{")
         last = text.rfind("}")
         if first != -1 and last != -1 and last > first:
