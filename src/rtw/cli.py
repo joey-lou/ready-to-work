@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from rtw import __version__
-from rtw.agent import AgentBackend, CursorAgentBackend, StepResult, StepStatus
+from rtw.agent import AgentBackend, CursorAgentBackend
 from rtw.architect import ExecutorNode, PlannerNode, ReviewerNode
 from rtw.core import Flow, FlowStatus, SharedState
 from rtw.storage import StateStorage
@@ -25,57 +25,12 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
-class MockAgentBackend(AgentBackend):
-    """Lightweight mock for `--mock` flag. No subprocess or LLM calls."""
-
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def execute_step(self, step, workspace, context=None):
-        return StepResult(
-            step_id=step.get("id", 0),
-            status=StepStatus.COMPLETED,
-            description=step.get("description", ""),
-            action_taken="Mock action",
-            files_changed=[],
-        )
-
-    def complete_json(self, prompt, system=None):
-        if system and "architect" in system.lower():
-            return {
-                "summary": "Mock plan",
-                "steps": [
-                    {
-                        "id": 1,
-                        "description": "Mock step",
-                        "type": "create",
-                        "target": "mock.py",
-                        "details": "details",
-                    }
-                ],
-            }
-        if system and "reviewer" in system.lower():
-            return {
-                "verdict": "approve",
-                "score": 90,
-                "summary": "Good",
-                "assessment": "Everything looks good.",
-                "blocking_reason": None,
-            }
-        return {"mock": True}
-
-
 def create_agent(
-    mock: bool = False,
     model: str | None = None,
     workspace: Path | None = None,
     backend: str = "cursor",
 ) -> AgentBackend:
     """Factory function for creating agent backends. Exposed for testing."""
-    if mock:
-        return MockAgentBackend()
-
     resolved_model = model or os.environ.get("RTW_MODEL")
     return _make_agent_backend(backend, workspace or Path.cwd(), resolved_model)
 
@@ -131,6 +86,9 @@ def create_flow(agent: AgentBackend, on_state_change=None) -> Flow:
     return Flow(start=planner, name="architect", on_state_change=on_state_change)
 
 
+_FLOW_RUN_EXCEPTIONS = (OSError, ValueError, TypeError, RuntimeError, KeyError)
+
+
 def _execute_flow(
     flow: Flow,
     state: SharedState,
@@ -144,7 +102,7 @@ def _execute_flow(
         logger.info("\nInterrupted by user")
         storage.save(state)
         return 130
-    except Exception as e:
+    except _FLOW_RUN_EXCEPTIONS as e:
         logger.error("Flow failed: %s", e)
         storage.save(state)
         return 1
@@ -158,7 +116,6 @@ def run_task(
     max_iterations: int,
     model: str | None = None,
     backend: str = "cursor",
-    mock: bool = False,
 ) -> int:
     """Execute the architect loop on a task file."""
     logger = logging.getLogger("rtw")
@@ -182,7 +139,7 @@ def run_task(
         max_iterations=max_iterations,
     )
 
-    agent = create_agent(mock=mock, model=model, workspace=workspace, backend=backend)
+    agent = create_agent(model=model, workspace=workspace, backend=backend)
     flow = create_flow(agent, on_state_change=storage.save)
     logger.info("Using %s backend", agent.name)
 
@@ -198,7 +155,6 @@ def resume_run(
     run_id: str | None = None,
     model: str | None = None,
     backend: str = "cursor",
-    mock: bool = False,
 ) -> int:
     """Resume a previous run from persisted state."""
     logger = logging.getLogger("rtw")
@@ -227,7 +183,7 @@ def resume_run(
 
     state.status = FlowStatus.PENDING
 
-    agent = create_agent(mock=mock, model=model, workspace=Path(state.workspace), backend=backend)
+    agent = create_agent(model=model, workspace=Path(state.workspace), backend=backend)
     flow = create_flow(agent, on_state_change=storage.save)
 
     logger.info("=" * 50)
@@ -305,11 +261,6 @@ Backends:
             choices=list(KNOWN_BACKENDS),
             help="Agent backend (default: cursor)",
         )
-        subparser.add_argument(
-            "--mock",
-            action="store_true",
-            help="Use mock agent (for testing)",
-        )
 
     run_parser = subparsers.add_parser("run", help="Run architect loop on a task file")
     run_parser.add_argument("task_file", type=Path, help="Path to task.md file")
@@ -327,7 +278,6 @@ Backends:
 
     model_arg = getattr(args, "model", None)
     backend_arg = getattr(args, "backend", "cursor")
-    mock_arg = getattr(args, "mock", False)
 
     match args.command:
         case "run":
@@ -337,7 +287,6 @@ Backends:
                 args.max_iter,
                 model=model_arg,
                 backend=backend_arg,
-                mock=mock_arg,
             )
         case "list":
             return list_runs(args.workspace)
@@ -347,7 +296,6 @@ Backends:
                 run_id=args.run_id,
                 model=model_arg,
                 backend=backend_arg,
-                mock=mock_arg,
             )
         case _:
             return 0

@@ -21,6 +21,37 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5.3-codex"
 
+_ITEM_ACTION: dict[str, str] = {
+    "file_edit": "modified",
+    "file_create": "created",
+    "file_delete": "deleted",
+}
+
+
+def _item_completed_to_changes(event: dict[str, Any]) -> tuple[list[FileChange], str | None]:
+    """Convert item.completed event to file changes and optional message. Reduces branch count."""
+    item = event.get("item", {})
+    item_type = item.get("type", "")
+    if item_type in _ITEM_ACTION:
+        return [FileChange(path=item.get("path", ""), action=_ITEM_ACTION[item_type])], None
+    if item_type == "message":
+        return [], (item.get("content", "") or "")[:200]
+    return [], None
+
+
+def _parse_message_from_jsonl_line(line: str) -> str | None:
+    """Parse a JSONL line; return message content if it is item.completed with type message."""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if event.get("type") != "item.completed":
+        return None
+    item = event.get("item", {})
+    if item.get("type") == "message":
+        return item.get("content", "")
+    return None
+
 
 class CodexAgentBackend(SubprocessAgentBackend):
     """Agent backend using OpenAI Codex CLI."""
@@ -78,44 +109,16 @@ class CodexAgentBackend(SubprocessAgentBackend):
                 continue
 
             event_type = event.get("type", "")
-
-            # Track file changes
             if event_type == "item.completed":
-                item = event.get("item", {})
-                item_type = item.get("type", "")
-
-                if item_type == "file_edit":
-                    files_changed.append(
-                        FileChange(
-                            path=item.get("path", ""),
-                            action="modified",
-                        )
-                    )
-                elif item_type == "file_create":
-                    files_changed.append(
-                        FileChange(
-                            path=item.get("path", ""),
-                            action="created",
-                        )
-                    )
-                elif item_type == "file_delete":
-                    files_changed.append(
-                        FileChange(
-                            path=item.get("path", ""),
-                            action="deleted",
-                        )
-                    )
-                elif item_type == "message":
-                    final_message = item.get("content", "")[:200]
-
-            # Track failures
+                extra_files, msg = _item_completed_to_changes(event)
+                files_changed.extend(extra_files)
+                if msg:
+                    final_message = msg
             elif event_type == "turn.failed":
                 has_error = True
                 error_msg = event.get("error", {}).get("message", "Unknown error")
-
-            elif event_type == "turn.completed":
-                if not final_message:
-                    final_message = "Completed"
+            elif event_type == "turn.completed" and not final_message:
+                final_message = "Completed"
 
         if has_error:
             return StepResult(
@@ -141,15 +144,7 @@ class CodexAgentBackend(SubprocessAgentBackend):
         for line in reversed(output.strip().split("\n")):
             if not line.strip():
                 continue
-            try:
-                event = json.loads(line)
-                if event.get("type") == "item.completed":
-                    item = event.get("item", {})
-                    if item.get("type") == "message":
-                        content = item.get("content", "")
-                        return self._extract_json(content)
-            except json.JSONDecodeError:
-                continue
-
-        # Fallback: try to extract JSON from the whole output
+            result = _parse_message_from_jsonl_line(line)
+            if result is not None:
+                return self._extract_json(result)
         return self._extract_json(output)

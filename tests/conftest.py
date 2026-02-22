@@ -2,21 +2,17 @@
 
 import pytest
 from helpers import (
+    APPROVE_RESPONSE,
+    PLAN_RESPONSE,
+    MockAgentBackend,
     make_architect_flow,
-    make_mock_agent,
-    make_mock_llm,
     make_state,
 )
 
 
 @pytest.fixture
-def mock_llm():
-    return make_mock_llm()
-
-
-@pytest.fixture
-def mock_agent(mock_llm):
-    return make_mock_agent(mock_llm)
+def mock_agent():
+    return MockAgentBackend(responses={"architect": PLAN_RESPONSE, "reviewer": APPROVE_RESPONSE})
 
 
 @pytest.fixture

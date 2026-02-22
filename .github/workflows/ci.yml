@@ -54,3 +54,6 @@ jobs:
 
       - name: Run ruff format check
         run: uv run ruff format --check .
+
+      - name: Check max file length (500 lines)
+        run: uv run python scripts/check_file_lengths.py

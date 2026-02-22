@@ -34,13 +34,6 @@ Documentation = "https://github.com/joey-lou/ready-to-work#readme"
 Repository = "https://github.com/joey-lou/ready-to-work"
 Issues = "https://github.com/joey-lou/ready-to-work/issues"
 
-[project.optional-dependencies]
-api = [
-    "fastapi>=0.110.0",
-    "uvicorn[standard]>=0.29.0",
-    "pydantic>=2.0.0",
-]
-
 [dependency-groups]
 dev = [
     "pre-commit>=4.0",
@@ -74,6 +67,7 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
+preview = true
 select = [
     "E",      # pycodestyle errors
     "W",      # pycodestyle warnings
@@ -87,6 +81,12 @@ select = [
     "PTH",    # flake8-use-pathlib
     "RUF",    # ruff-specific
     "S",      # flake8-bandit
+    "PLR1702", # too-many-nested-blocks (max 3)
+    "PLR0915", # too-many-statements (max 30, ~function length)
+    "PLR0912", # too-many-branches (max 8)
+    "PLR0913", # too-many-arguments (max 6)
+    "ERA001",  # commented-out code
+    "BLE001",  # blind except (catch specific or re-raise)
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
@@ -94,9 +94,11 @@ ignore = [
     "RUF003", # ambiguous unicode in comments
     "RUF010", # explicit f-string conversion (style)
     "RUF022", # unsorted __all__ (existing style)
+    "RUF067", # __init__ only docstrings/re-exports (version import pattern)
     "S101",   # assert in tests (pytest standard)
     "S108",   # /tmp in test helpers (tests only)
-    "S603",   # subprocess (cursor CLI is intentional)
+    "S404",   # subprocess import (cursor CLI is intentional)
+    "S603",   # subprocess call (cursor CLI is intentional)
     "SIM117", # multiple with (test style)
     "PTH101", # os.chmod -> Path.chmod (test uses os for chmod)
 ]
@@ -104,6 +106,12 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.ruff.lint.pylint]
+max-nested-blocks = 3
+max-statements = 30
+max-branches = 8
+max-args = 6
 
 [tool.ruff.lint.isort]
 known-first-party = ["rtw"]

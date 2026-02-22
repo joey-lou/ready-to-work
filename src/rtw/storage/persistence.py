@@ -75,7 +75,7 @@ class StateStorage:
         try:
             data = json.loads(self.state_file.read_text())
             return SharedState.from_dict(data)
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error("Failed to load state: %s", e)
             return None
 
@@ -85,7 +85,7 @@ class StateStorage:
         for f in sorted(self.history_dir.glob("iter_*.json")):
             try:
                 iterations.append(json.loads(f.read_text()))
-            except Exception as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning("Failed to read %s: %s", f, e)
         return iterations
 

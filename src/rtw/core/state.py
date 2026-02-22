@@ -237,19 +237,22 @@ class SharedState:
         total_completed = 0
         total_failed = 0
         total_duration = 0.0
-
         for record in self.history:
             if record.build_result:
-                for step in record.build_result.get("completed_steps", []):
-                    if step.get("status") == "completed":
-                        total_completed += 1
-                    elif step.get("status") == "failed":
-                        total_failed += 1
-                    if step.get("duration_seconds"):
-                        total_duration += step["duration_seconds"]
-
+                c, f, d = _aggregate_steps(record.build_result.get("completed_steps", []))
+                total_completed += c
+                total_failed += f
+                total_duration += d
         return (
             f"Execution: {total_completed} steps completed, "
             f"{total_failed} failed across {len(self.history)} iterations "
             f"({total_duration:.1f}s total)"
         )
+
+
+def _aggregate_steps(steps: list[dict[str, Any]]) -> tuple[int, int, float]:
+    """Sum completed/failed counts and duration from a list of step dicts."""
+    completed = sum(1 for s in steps if s.get("status") == "completed")
+    failed = sum(1 for s in steps if s.get("status") == "failed")
+    duration = sum(s.get("duration_seconds", 0) or 0 for s in steps)
+    return completed, failed, duration
