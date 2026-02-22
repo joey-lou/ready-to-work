@@ -5,6 +5,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from rtw import __version__
@@ -136,6 +137,7 @@ def run_task(
         task_file=str(task_file),
         task_content=task_content,
         workspace=str(workspace),
+        run_tmp_dir=str(storage.tmp_dir),
         max_iterations=max_iterations,
     )
 
@@ -178,6 +180,9 @@ def resume_run(
         )
         return 1
 
+    if not state.run_tmp_dir:
+        state.run_tmp_dir = str(storage.tmp_dir)
+
     logger.info("Resuming run: %s", storage.run_id)
     logger.info("Previous status: %s, Iteration: %d", state.status.value, state.current_iteration)
 
@@ -193,23 +198,45 @@ def resume_run(
     return _execute_flow(flow, state, storage, logger)
 
 
-def list_runs(workspace: Path) -> int:
-    """List all runs in a workspace."""
+def _format_ts(iso_ts: str | None) -> str:
+    """Format ISO timestamp for display (e.g. 2026-02-22 13:31)."""
+    if not iso_ts:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso_ts[:16] if iso_ts else "—"
+
+
+def list_runs(workspace: Path, max_count: int = 5, reverse: bool = False) -> int:
+    """List runs with metadata. Default: last N runs in chronological order (latest last).
+    With -r: last N runs in reverse chronological order (newest first, oldest of that window last)."""
     runs = StateStorage.list_runs(workspace)
 
     if not runs:
         print("No runs found")
         return 0
 
-    print(f"Found {len(runs)} runs:\n")
-    for run_id in runs:
+    recent = runs if reverse else runs[::-1]
+    shown = recent[-max_count:]
+    total = len(runs)
+    if total > max_count:
+        print(f"Showing last {max_count} of {total} runs (use -n N for more).\n")
+    else:
+        print(f"Found {total} run(s):\n")
+
+    for run_id in shown:
         storage = StateStorage(workspace, run_id)
         state = storage.load()
         if state:
             print(f"  {run_id}")
-            print(f"    Status: {state.status.value}")
-            print(f"    Iterations: {state.current_iteration}")
-            print(f"    Task: {Path(state.task_file).name}")
+            print(f"    Status:       {state.status.value}")
+            print(f"    Iterations:   {state.current_iteration} / {state.max_iterations}")
+            print(f"    Task:         {Path(state.task_file).name}")
+            print(f"    Updated:      {_format_ts(state.updated_at)}")
+            print(f"    Created:      {_format_ts(state.created_at)}")
+            print(f"    Artifacts:    {len(state.artifacts)}")
             print()
 
     return 0
@@ -224,7 +251,7 @@ Examples:
   rtw run task.md                  # Run architect loop
   rtw run task.md --max-iter 5     # Limit to 5 iterations
   rtw run task.md --backend codex  # Use Codex CLI backend
-  rtw list                         # List previous runs
+  rtw list                         # Last N runs, chronological (latest last)
   rtw resume                       # Resume latest run
   rtw resume --run-id 20240101_120000
 
@@ -267,7 +294,24 @@ Backends:
     run_parser.add_argument("--max-iter", type=int, default=10, help="Max iterations (default: 10)")
     add_common_args(run_parser)
 
-    subparsers.add_parser("list", help="List previous runs")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List previous runs. Default: last N in chronological order (latest last).",
+    )
+    list_parser.add_argument(
+        "-n",
+        "--max-count",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Show at most N runs (default: 5)",
+    )
+    list_parser.add_argument(
+        "-r",
+        "--reverse",
+        action="store_true",
+        help="Reverse display order",
+    )
 
     resume_parser = subparsers.add_parser("resume", help="Resume a previous run")
     resume_parser.add_argument("--run-id", type=str, help="Specific run ID to resume")
@@ -289,7 +333,11 @@ Backends:
                 backend=backend_arg,
             )
         case "list":
-            return list_runs(args.workspace)
+            return list_runs(
+                args.workspace,
+                max_count=args.max_count,
+                reverse=args.reverse,
+            )
         case "resume":
             return resume_run(
                 args.workspace,

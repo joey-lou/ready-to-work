@@ -51,6 +51,7 @@ class SharedState:
     task_file: str
     task_content: str
     workspace: str
+    run_tmp_dir: str | None = None  # Scratch/temp files must go here only
 
     status: FlowStatus = FlowStatus.PENDING
     current_iteration: int = 0
@@ -73,6 +74,7 @@ class SharedState:
             "task_file": self.task_file,
             "task_content": self.task_content,
             "workspace": self.workspace,
+            "run_tmp_dir": self.run_tmp_dir,
             "status": self.status.value,
             "current_iteration": self.current_iteration,
             "max_iterations": self.max_iterations,
@@ -112,6 +114,7 @@ class SharedState:
             task_file=data["task_file"],
             task_content=data["task_content"],
             workspace=data["workspace"],
+            run_tmp_dir=data.get("run_tmp_dir"),
             status=FlowStatus(data["status"]),
             current_iteration=data["current_iteration"],
             max_iterations=data["max_iterations"],

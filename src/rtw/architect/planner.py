@@ -27,6 +27,9 @@ If previous iteration feedback or lessons learned are provided, integrate them:
 - Build on what worked well
 - Address specific issues raised by the reviewer
 
+## Scratch / temporary files
+If the task requires temporary or scratch files (drafts, intermediate outputs, logs), create them only in the run's tmp directory given in context. Do not create temp files in the workspace root or outside the run directory.
+
 ## Output Format
 Return ONLY valid JSON (no markdown, no explanation):
 {
@@ -65,6 +68,7 @@ class PlannerNode(Node):
             "max_iterations": state.max_iterations,
             "iterations_remaining": state.max_iterations - state.current_iteration,
             "workspace": state.workspace,
+            "run_tmp_dir": state.run_tmp_dir,
             "lessons_learned": state.get_lessons_summary(),
             "existing_artifacts": [a.path for a in state.artifacts],
         }
@@ -117,6 +121,10 @@ class PlannerNode(Node):
             f"- Iteration: {context['iteration']} of {context['max_iterations']}",
             f"- {budget_note}Plan accordingly." if budget_note else "",
         ]
+        if context.get("run_tmp_dir"):
+            parts.append(
+                f"- Temporary/scratch files must be created only under: {context['run_tmp_dir']}"
+            )
 
         if context.get("existing_artifacts"):
             parts.append("\n# Files Already Created/Modified")

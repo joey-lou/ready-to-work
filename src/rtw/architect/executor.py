@@ -53,6 +53,10 @@ class ExecutorNode(Node):
             f"Workspace: {state.workspace}",
             f"Iteration: {state.current_iteration} of {state.max_iterations}",
         ]
+        if state.run_tmp_dir:
+            context_parts.append(
+                f"Temporary/scratch files must be created only under: {state.run_tmp_dir}"
+            )
 
         if state.artifacts:
             context_parts.append(
