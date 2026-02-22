@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/ready-to-work.svg)](https://pypi.org/project/ready-to-work/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ready-to-work.svg)](https://pypi.org/project/ready-to-work/)
 [![License](https://img.shields.io/pypi/l/ready-to-work.svg)](https://github.com/joey-lou/ready-to-work/blob/main/LICENSE)
-[![CI](https://github.com/joey-lou/ready-to-work/actions/workflows/ci.yml/badge.svg)](https://github.com/joey-lou/ready-to-work/actions/workflows/ci.yml)
+[![CI](https://github.com/joey-lou/ready-to-work/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/joey-lou/ready-to-work/actions/workflows/ci.yml)
 
 Plan → Execute → Review loop for AI-driven development. Unlike simple chat, rtw orchestrates an **agentic loop** where the AI actually executes code changes step-by-step.
 
