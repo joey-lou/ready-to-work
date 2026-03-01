@@ -1,164 +1,129 @@
-"""Planner node for rtw architect loop."""
+"""Planner node: maintains PLAN.md, SUBTASK.md; updates plan_status/blocking_reason in state.json."""
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from rtw.agent import AgentBackend, AgentError
-from rtw.core import FlowStatus, Node, SharedState
+from rtw.architect.prompts import PLANNER
+from rtw.core import FlowStatus, Node, PlanStatus, SharedState, SubtaskStatus
+from rtw.core.paths import PLAN_MD, STATE_JSON, SUBTASK_MD, run_paths
+from rtw.core.trace import append_agent_trace
 
 logger = logging.getLogger(__name__)
 
-PLANNER_SYSTEM = """You are a senior software architect planning implementation tasks.
 
-## Your Role
-Analyze requirements and create detailed, actionable implementation plans
-that a builder agent can execute autonomously.
+def _read(path: Path) -> str:
+    return path.read_text() if path.exists() else ""
 
-## Planning Strategy
-1. ANALYZE: Read the task requirements carefully. Identify what already exists vs what needs to be created.
-2. PRIORITIZE: Order steps by dependency - foundational work first, then features, then polish.
-3. SCOPE: Limit to 3-5 concrete steps per iteration (~5 min of work). Plan remaining work for follow-up iterations.
-4. SPECIFY: Include enough detail that the builder doesn't need to make judgment calls.
 
-## Learning from History
-If previous iteration feedback or lessons learned are provided, integrate them:
-- Don't repeat approaches that failed
-- Build on what worked well
-- Address specific issues raised by the reviewer
+def _read_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
 
-## Scratch / temporary files
-If the task requires temporary or scratch files (drafts, intermediate outputs, logs), create them only in the run's tmp directory given in context. Do not create temp files in the workspace root or outside the run directory.
 
-## Output Format
-Return ONLY valid JSON (no markdown, no explanation):
-{
-    "summary": "Brief summary of what will be built this iteration",
-    "steps": [
-        {
-            "id": 1,
-            "description": "Clear action to take",
-            "type": "create|modify|delete|research",
-            "target": "file path or component name",
-            "details": "Specific implementation details - be precise"
-        }
-    ]
-}"""
+def _safe_plan_status(value: str | None) -> PlanStatus:
+    if not value:
+        return PlanStatus.IN_PROGRESS
+    try:
+        return PlanStatus(value)
+    except ValueError:
+        return PlanStatus.IN_PROGRESS
+
+
+def _build_planner_prompt(
+    run_dir: Path, task: str, plan: str, subtask: str, iteration: int, max_iter: int
+) -> str:
+    return PLANNER.format(
+        state_path=run_dir / STATE_JSON,
+        task=task,
+        plan=plan or "(none yet)",
+        subtask=subtask or "(none yet)",
+        iteration=iteration,
+        max_iter=max_iter,
+        plan_path=run_dir / PLAN_MD,
+        subtask_path=run_dir / SUBTASK_MD,
+    )
 
 
 class PlannerNode(Node):
-    """Analyzes task requirements and generates an implementation plan.
-
-    Consumes reviewer feedback as opaque text rather than parsing specific keys,
-    making the planner resilient to variations in reviewer output structure.
-    """
-
     def __init__(self, agent: AgentBackend):
         super().__init__("Planner")
         self.agent = agent
 
     def prep(self, state: SharedState) -> dict[str, Any]:
-        """Gather context for planning."""
         state.status = FlowStatus.PLANNING
         state.start_iteration()
-
-        context = {
-            "task_content": state.task_content,
+        paths = run_paths(state.run_dir)
+        return {
+            "workspace": Path(state.workspace),
+            "run_dir": Path(state.run_dir),
+            "paths": paths,
+            "task": _read(paths["TASK"]),
+            "plan": _read(paths["PLAN"]),
+            "subtask": _read(paths["SUBTASK"]),
             "iteration": state.current_iteration,
             "max_iterations": state.max_iterations,
-            "iterations_remaining": state.max_iterations - state.current_iteration,
-            "workspace": state.workspace,
-            "run_tmp_dir": state.run_tmp_dir,
-            "lessons_learned": state.get_lessons_summary(),
-            "existing_artifacts": [a.path for a in state.artifacts],
         }
 
-        if len(state.history) > 1:
-            prev_record = state.history[-2]
-            if prev_record.review_result:
-                context["previous_review"] = _format_review_as_text(prev_record.review_result)
-                context["previous_plan"] = prev_record.plan
-
-        return context
-
     def exec(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Generate implementation plan via LLM."""
-        prompt = self._build_prompt(context)
-
-        logger.info("Generating plan for iteration %d", context["iteration"])
+        run_dir = context["run_dir"]
+        full_prompt = _build_planner_prompt(
+            run_dir,
+            context["task"],
+            context["plan"],
+            context["subtask"],
+            context["iteration"],
+            context["max_iterations"],
+        )
+        logger.info("Planning iteration %d", context["iteration"])
         try:
-            return self.agent.complete_json(prompt, system=PLANNER_SYSTEM)
-        except AgentError as e:
-            logger.error("Plan generation failed: %s", e)
+            result = self.agent.execute(context["workspace"], full_prompt, run_dir=run_dir)
+            return {
+                "success": result.success,
+                "output": result.output,
+                "error": result.error,
+                "prompt": full_prompt,
+            }
+        except AgentError as exc:
+            logger.error("Planner failed: %s", exc)
             raise
 
-    def post(self, state: SharedState, prep_result: dict, exec_result: dict) -> str:
-        """Store plan and transition to execution phase."""
-        state.current_plan = exec_result
+    def post(
+        self, state: SharedState, prep_result: dict[str, Any], exec_result: dict[str, Any]
+    ) -> str | None:
+        paths = run_paths(state.run_dir)
+        data = _read_state(paths["state_file"])
+        plan_status = _safe_plan_status(data.get("plan_status"))
 
-        record = state.current_record()
-        if record:
-            record.plan = state.current_plan
+        append_agent_trace(
+            state.run_dir,
+            stage="PLANNER",
+            iteration=state.current_iteration,
+            prompt=exec_result.get("prompt"),
+            output=exec_result.get("output"),
+        )
 
+        state.plan_status = plan_status
+        state.subtask_status = SubtaskStatus.IN_PROGRESS
+
+        if plan_status == PlanStatus.COMPLETED:
+            state.status = FlowStatus.COMPLETED
+            state.subtask_status = SubtaskStatus.PASSED
+            state.touch()
+            return None
+
+        if plan_status == PlanStatus.BLOCKED:
+            state.status = FlowStatus.BLOCKED
+            state.blocking_reason = str(data.get("blocking_reason") or "Planner blocked")
+            state.touch()
+            return None
+
+        state.status = FlowStatus.PENDING
         state.touch()
         return "execute"
-
-    def _build_prompt(self, context: dict[str, Any]) -> str:
-        iterations_remaining = context["iterations_remaining"]
-        budget_note = (
-            f"You have {iterations_remaining} iterations remaining. "
-            if iterations_remaining <= 3
-            else ""
-        )
-        if iterations_remaining == 1:
-            budget_note = "WARNING: This is your LAST iteration. Prioritize completing the most critical remaining work. "
-
-        parts = [
-            "# Task Requirements\n",
-            context["task_content"],
-            "\n# Context\n",
-            f"- Workspace: {context['workspace']}",
-            f"- Iteration: {context['iteration']} of {context['max_iterations']}",
-            f"- {budget_note}Plan accordingly." if budget_note else "",
-        ]
-        if context.get("run_tmp_dir"):
-            parts.append(
-                f"- Temporary/scratch files must be created only under: {context['run_tmp_dir']}"
-            )
-
-        if context.get("existing_artifacts"):
-            parts.append("\n# Files Already Created/Modified")
-            for path in context["existing_artifacts"]:
-                parts.append(f"- {path}")
-
-        if context.get("lessons_learned"):
-            parts.append(f"\n{context['lessons_learned']}")
-
-        if context.get("previous_review"):
-            parts.append("\n# Reviewer Feedback from Previous Iteration\n")
-            parts.append(context["previous_review"])
-
-        if context.get("previous_plan"):
-            parts.append("\n# Previous Plan (to improve upon)\n")
-            parts.append(str(context["previous_plan"]))
-
-        parts.append("\n\nGenerate a detailed implementation plan as JSON.")
-
-        return "\n".join(parts)
-
-
-def _format_review_as_text(review: dict) -> str:
-    """Render a review result as readable text for the planner LLM.
-
-    Uses the assessment field when present; falls back to formatted JSON
-    for resilience against unexpected LLM output structures.
-    """
-    assessment = review.get("assessment")
-    if assessment:
-        score = review.get("score", "N/A")
-        verdict = review.get("verdict", "N/A")
-        return f"Verdict: {verdict} | Score: {score}/100\n\n{assessment}"
-
-    # Fallback: dump whatever structure we received as formatted JSON.
-    # The planner LLM can interpret JSON text perfectly well.
-    return json.dumps(review, indent=2)

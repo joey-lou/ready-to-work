@@ -53,18 +53,18 @@ def _make_agent_backend(backend: str, workspace: Path, model: str | None) -> Age
             raise ValueError(f"Unknown backend: {backend}")
 
 
-def _report_final_status(logger: logging.Logger, final_state: SharedState) -> int:
-    """Log final state summary and return appropriate exit code."""
+def _report_final_status(logger: logging.Logger, final_state: SharedState, run_dir: Path) -> int:
     logger.info("=" * 50)
     logger.info("Flow completed")
     logger.info("=" * 50)
     logger.info("Final status: %s", final_state.status.value)
     logger.info("Iterations: %d", final_state.current_iteration)
-    logger.info("Artifacts: %d", len(final_state.artifacts))
 
     match final_state.status:
         case FlowStatus.COMPLETED:
-            logger.info("Summary: %s", final_state.final_summary)
+            summary_path = run_dir / "SUMMARY.md"
+            if summary_path.exists():
+                logger.info("Summary: %s", summary_path.read_text()[:500].strip())
             return 0
         case FlowStatus.BLOCKED:
             logger.warning("Blocked: %s", final_state.blocking_reason)
@@ -82,6 +82,7 @@ def create_flow(agent: AgentBackend, on_state_change=None) -> Flow:
 
     planner.on("execute") >> executor
     executor.on("review") >> reviewer
+    reviewer.on("execute") >> executor
     reviewer.on("plan") >> planner
 
     return Flow(start=planner, name="architect", on_state_change=on_state_change)
@@ -108,7 +109,7 @@ def _execute_flow(
         storage.save(state)
         return 1
 
-    return _report_final_status(logger, final_state)
+    return _report_final_status(logger, final_state, Path(final_state.run_dir))
 
 
 def run_task(
@@ -130,13 +131,15 @@ def run_task(
     logger.info("Task length: %d chars", len(task_content))
 
     storage = StateStorage(workspace)
+    storage.initialize_task_doc(task_content)
     logger.info("Run ID: %s", storage.run_id)
     logger.info("State stored in: %s", storage.base_dir)
 
     state = SharedState(
-        task_file=str(task_file),
-        task_content=task_content,
+        task_file=str(storage.task_doc),
+        task_content=storage.task_doc.read_text(),
         workspace=str(workspace),
+        run_dir=str(storage.base_dir),
         run_tmp_dir=str(storage.tmp_dir),
         max_iterations=max_iterations,
     )
@@ -182,6 +185,8 @@ def resume_run(
 
     if not state.run_tmp_dir:
         state.run_tmp_dir = str(storage.tmp_dir)
+    if not state.run_dir:
+        state.run_dir = str(storage.base_dir)
 
     logger.info("Resuming run: %s", storage.run_id)
     logger.info("Previous status: %s, Iteration: %d", state.status.value, state.current_iteration)
@@ -233,10 +238,7 @@ def list_runs(workspace: Path, max_count: int = 5, reverse: bool = False) -> int
             print(f"  {run_id}")
             print(f"    Status:       {state.status.value}")
             print(f"    Iterations:   {state.current_iteration} / {state.max_iterations}")
-            print(f"    Task:         {Path(state.task_file).name}")
             print(f"    Updated:      {_format_ts(state.updated_at)}")
-            print(f"    Created:      {_format_ts(state.created_at)}")
-            print(f"    Artifacts:    {len(state.artifacts)}")
             print()
 
     return 0

@@ -1,179 +1,104 @@
-"""Executor node for rtw architect loop.
-
-Replaces the old Builder node with step-by-step execution using an agent backend.
-The key difference: the agent ACTUALLY DOES the work (file ops, commands)
-rather than describing what it would do.
-"""
+"""Executor node: runs SUBTASK.md; sets state.files_changed for reviewer."""
 
 import logging
-import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
-from rtw.agent import AgentBackend, AgentResult, StepResult, StepStatus
-from rtw.core import FlowStatus, Node, SharedState
+from rtw.agent import AgentBackend, AgentResult
+from rtw.architect.prompts import EXECUTOR
+from rtw.core import FlowStatus, Node, SharedState, SubtaskStatus
+from rtw.core.paths import run_paths
+from rtw.core.trace import append_agent_trace
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS_PER_ITERATION = int(os.environ.get("RTW_MAX_STEPS_PER_ITERATION", "5"))
-
 
 class ExecutorNode(Node):
-    """
-    Executes plan steps using an agent backend with full tool capabilities.
-
-    Unlike the old Builder which asked an LLM to describe what it would do,
-    the Executor uses an agent that can actually:
-    - Read and write files
-    - Run shell commands
-    - Search the codebase
-    - Verify changes
-
-    Execution is step-by-step with feedback between steps, allowing:
-    - Early abort on critical failures
-    - Progress tracking per step
-    - Better error attribution
-    """
-
     def __init__(self, agent: AgentBackend):
         super().__init__("Executor")
         self.agent = agent
 
     def prep(self, state: SharedState) -> dict[str, Any]:
-        """Prepare execution context from current plan."""
         state.status = FlowStatus.EXECUTING
-
-        # Get steps to execute this iteration
-        plan = state.current_plan or {}
-        all_steps = plan.get("steps", [])
-        steps_to_run = all_steps[:MAX_STEPS_PER_ITERATION]
-
-        # Build context for the agent
-        context_parts = [
-            f"Workspace: {state.workspace}",
-            f"Iteration: {state.current_iteration} of {state.max_iterations}",
-        ]
-        if state.run_tmp_dir:
-            context_parts.append(
-                f"Temporary/scratch files must be created only under: {state.run_tmp_dir}"
-            )
-
-        if state.artifacts:
-            context_parts.append(
-                f"Existing files: {', '.join(a.path for a in state.artifacts[:10])}"
-            )
-
-        lessons = state.get_lessons_summary()
-        if lessons:
-            context_parts.append(f"\n{lessons}")
-
+        paths = run_paths(state.run_dir)
+        subtask_path = paths["SUBTASK"]
         return {
-            "steps": steps_to_run,
-            "all_steps_count": len(all_steps),
             "workspace": Path(state.workspace),
-            "context": "\n".join(context_parts),
-            "plan_summary": plan.get("summary", ""),
+            "run_dir": Path(state.run_dir),
+            "run_tmp_dir": state.run_tmp_dir,
+            "paths": paths,
+            "subtask_path": subtask_path,
+            "subtask_markdown": subtask_path.read_text() if subtask_path.exists() else "",
+            "iteration": state.current_iteration,
+            "max_iterations": state.max_iterations,
+            "git_before": _git_status_lines(Path(state.workspace)),
         }
 
     def exec(self, prep_result: dict[str, Any]) -> AgentResult:
-        """Execute steps using the agent backend."""
-        steps = prep_result["steps"]
-        workspace = prep_result["workspace"]
-        context = prep_result["context"]
-
-        if not steps:
-            logger.warning("No steps to execute")
-            return AgentResult(
-                success=True,
-                summary="No steps in plan",
-            )
-
-        logger.info(
-            "Executing %d of %d steps: %s",
-            len(steps),
-            prep_result["all_steps_count"],
-            prep_result["plan_summary"][:60],
-        )
-
-        def on_step_complete(result: StepResult) -> None:
-            status_emoji = "✓" if result.status == StepStatus.COMPLETED else "✗"
-            logger.info(
-                "  %s Step %d: %s",
-                status_emoji,
-                result.step_id,
-                result.description[:50],
-            )
-
-        return self.agent.execute_steps(
-            steps=steps,
-            workspace=workspace,
-            context=context,
-            on_step_complete=on_step_complete,
+        prompt = _build_executor_prompt(prep_result)
+        logger.info("Executing subtask iteration %d", prep_result["iteration"])
+        return self.agent.execute(
+            prep_result["workspace"],
+            prompt,
+            run_dir=prep_result["run_dir"],
         )
 
     def post(
         self, state: SharedState, prep_result: dict[str, Any], exec_result: AgentResult
     ) -> str:
-        """Record execution results and transition to review."""
-        record = state.current_record()
+        changed = _git_changed_paths(
+            prep_result["git_before"],
+            _git_status_lines(prep_result["workspace"]),
+        )
+        state.files_changed = [{"path": p, "action": "modified"} for p in changed]
 
-        # Convert AgentResult to the format expected by state/reviewer
-        build_result = self._convert_to_build_result(exec_result)
-
-        if record:
-            record.build_result = build_result
-
-        # Track artifacts from actual file changes
-        for change in exec_result.files_changed:
-            state.add_artifact(change.path, change.action)
-
-        # Capture lessons from failures
-        for step in exec_result.failed_steps:
-            if step.error:
-                state.add_lesson("failure", f"Step {step.step_id} failed: {step.error}")
-
-        # Capture successful approaches
-        for step in exec_result.completed_steps:
-            if step.action_taken and len(step.files_changed) > 0:
-                state.add_lesson(
-                    "success",
-                    f"Step {step.step_id}: {step.action_taken[:100]}",
-                )
-
-        state.touch()
-
-        # Log summary
-        logger.info(
-            "Execution complete: %d completed, %d failed",
-            len(exec_result.completed_steps),
-            len(exec_result.failed_steps),
+        append_agent_trace(
+            state.run_dir,
+            stage="EXECUTOR",
+            iteration=state.current_iteration,
+            prompt=_build_executor_prompt(prep_result),
+            output=exec_result.output,
         )
 
+        state.subtask_status = (
+            SubtaskStatus.NEEDS_REVIEW if exec_result.success else SubtaskStatus.BLOCKED
+        )
+        state.status = FlowStatus.PENDING
+        state.touch()
         return "review"
 
-    def _convert_to_build_result(self, result: AgentResult) -> dict[str, Any]:
-        """Convert AgentResult to legacy build_result format for compatibility."""
-        completed_steps = []
-        for step in result.steps:
-            completed_steps.append(
-                {
-                    "step_id": step.step_id,
-                    "status": step.status.value,
-                    "action_taken": step.action_taken,
-                    "files_affected": [fc.path for fc in step.files_changed],
-                    "notes": step.error or "",
-                    "duration_seconds": step.duration_seconds,
-                }
-            )
 
-        artifacts_created = [{"path": fc.path, "action": fc.action} for fc in result.files_changed]
+def _git_status_lines(workspace: Path) -> set[str]:
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            cwd=str(workspace),
+            check=False,
+        )
+    except OSError:
+        return set()
+    return (
+        {line for line in (r.stdout or "").splitlines() if line.strip()}
+        if r.returncode == 0
+        else set()
+    )
 
-        issues = [step.error for step in result.failed_steps if step.error]
 
-        return {
-            "completed_steps": completed_steps,
-            "artifacts_created": artifacts_created,
-            "issues_encountered": issues,
-            "summary": result.summary,
-            "success": result.success,
-        }
+def _git_changed_paths(before: set[str], after: set[str]) -> list[str]:
+    paths = []
+    for line in sorted(after - before):
+        if len(line) >= 4:
+            paths.append(line[3:].strip())
+    return paths
+
+
+def _build_executor_prompt(prep_result: dict[str, Any]) -> str:
+    tmp_dir = prep_result.get("run_tmp_dir") or prep_result["run_dir"] / "tmp"
+    return EXECUTOR.format(
+        workspace_path=prep_result["workspace"],
+        tmp_dir=tmp_dir,
+        subtask_markdown=prep_result["subtask_markdown"],
+    )

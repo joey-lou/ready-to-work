@@ -1,115 +1,110 @@
-"""CLI argument parsing and main() dispatch."""
+"""CLI: main() dispatch and run_task/resume exit codes."""
 
-import argparse
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
+from helpers import make_state
 
-from rtw import __version__
-
-
-def _parse_args(args: list[str]):
-    """Parse CLI args without executing (reconstruct parser)."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-V", "--version", action="version", version=f"rtw {__version__}")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-w", "--workspace", default=".")
-    sub = parser.add_subparsers(dest="command")
-    run_p = sub.add_parser("run")
-    run_p.add_argument("task_file")
-    run_p.add_argument("--max-iter", type=int, default=10)
-    run_p.add_argument("--model", default=None)
-    sub.add_parser("list")
-    res_p = sub.add_parser("resume")
-    res_p.add_argument("--run-id", default=None)
-    res_p.add_argument("--model", default=None)
-    return parser.parse_args(args)
-
-
-def test_verbose_flag():
-    args = _parse_args(["-v", "list"])
-    assert args.verbose is True
-
-
-def test_version_exits_zero():
-    with pytest.raises(SystemExit) as exc:
-        _parse_args(["-V"])
-    assert exc.value.code == 0
-
-
-def test_run_subcommand():
-    args = _parse_args(["run", "task.md", "--max-iter", "3"])
-    assert args.command == "run"
-    assert args.task_file == "task.md"
-    assert args.max_iter == 3
-
-
-def test_resume_subcommand_with_run_id():
-    args = _parse_args(["resume", "--run-id", "20240101_120000"])
-    assert args.command == "resume"
-    assert args.run_id == "20240101_120000"
-
-
-def test_list_subcommand():
-    args = _parse_args(["list"])
-    assert args.command == "list"
-
-
-def test_workspace_default():
-    args = _parse_args(["list"])
-    assert args.workspace == "."
-
-
-def test_model_passed_through_run():
-    args = _parse_args(["run", "task.md", "--model", "claude-3-sonnet"])
-    assert args.model == "claude-3-sonnet"
-
-
-def test_model_passed_through_resume():
-    args = _parse_args(["resume", "--model", "gpt-4"])
-    assert args.model == "gpt-4"
+from rtw.core import FlowStatus, SharedState
+from rtw.storage import StateStorage
 
 
 def test_main_dispatches_list():
+    """main() with 'list' calls list_runs and returns its exit code."""
     from rtw.cli import main
 
     with (
         patch("sys.argv", ["rtw", "list"]),
-        patch("rtw.cli.list_runs", return_value=0) as mock_list,
+        patch("rtw.cli.list_runs", return_value=0) as m,
         patch("rtw.cli.setup_logging"),
     ):
-        result = main()
-    assert result == 0
-    mock_list.assert_called_once()
+        assert main() == 0
+    m.assert_called_once()
 
 
 def test_main_dispatches_run():
+    """main() with 'run' and task file calls run_task."""
     from rtw.cli import main
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        task_file = str(Path(tmpdir) / "task.md")
-        Path(task_file).write_text("task")
+        task_file = Path(tmpdir) / "task.md"
+        task_file.write_text("task")
         with (
-            patch("sys.argv", ["rtw", "-w", tmpdir, "run", task_file]),
-            patch("rtw.cli.run_task", return_value=0) as mock_run,
+            patch("sys.argv", ["rtw", "-w", tmpdir, "run", str(task_file)]),
+            patch("rtw.cli.run_task", return_value=0) as m,
             patch("rtw.cli.setup_logging"),
         ):
-            result = main()
-    assert result == 0
-    mock_run.assert_called_once()
+            assert main() == 0
+        m.assert_called_once()
 
 
 def test_main_dispatches_resume():
+    """main() with 'resume' calls resume_run."""
     from rtw.cli import main
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
             patch("sys.argv", ["rtw", "-w", tmpdir, "resume"]),
-            patch("rtw.cli.resume_run", return_value=0) as mock_resume,
+            patch("rtw.cli.resume_run", return_value=0) as m,
             patch("rtw.cli.setup_logging"),
         ):
-            result = main()
-    assert result == 0
-    mock_resume.assert_called_once()
+            assert main() == 0
+        m.assert_called_once()
+
+
+def test_run_task_missing_file_returns_one():
+    """run_task with missing task file returns 1."""
+    from rtw.cli import run_task
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        assert run_task(Path(tmpdir) / "nonexistent.md", Path(tmpdir), max_iterations=1) == 1
+
+
+def test_run_task_completes_returns_zero():
+    """run_task with mock agent that completes returns 0."""
+    from helpers import MockAgentBackend
+
+    from rtw.cli import run_task
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "task.md").write_text("Build something")
+        with patch("rtw.cli.create_agent", return_value=MockAgentBackend()):
+            assert run_task(Path(tmpdir) / "task.md", Path(tmpdir), max_iterations=5) == 0
+
+
+def test_run_task_blocked_returns_two():
+    """run_task when flow ends BLOCKED (e.g. max_iterations) returns 2."""
+    from helpers import MockAgentBackend
+
+    from rtw.cli import run_task
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "task.md").write_text("Do something")
+        with patch(
+            "rtw.cli.create_agent", return_value=MockAgentBackend(plan_status="IN_PROGRESS")
+        ):
+            assert run_task(Path(tmpdir) / "task.md", Path(tmpdir), max_iterations=1) == 2
+
+
+def test_list_runs_returns_zero():
+    """list_runs with existing run returns 0."""
+    from rtw.cli import list_runs
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = StateStorage(tmpdir, "run1")
+        storage.save(SharedState(workspace=tmpdir, run_dir=str(storage.base_dir)))
+        assert list_runs(Path(tmpdir)) == 0
+
+
+def test_report_final_status_exit_codes():
+    """_report_final_status returns 0 for COMPLETED, 1 for other, 2 for BLOCKED."""
+    from rtw.cli import _report_final_status
+
+    log = logging.getLogger("test")
+    assert _report_final_status(log, make_state(status=FlowStatus.COMPLETED), Path("/run")) == 0
+    assert _report_final_status(log, make_state(status=FlowStatus.FAILED), Path("/run")) == 1
+    state_blocked = make_state(status=FlowStatus.BLOCKED)
+    state_blocked.blocking_reason = "Stuck"
+    assert _report_final_status(log, state_blocked, Path(state_blocked.run_dir)) == 2

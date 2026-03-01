@@ -10,9 +10,6 @@ from .base import (
     AgentBackend,
     AgentError,
     AgentResult,
-    FileChange,
-    StepResult,
-    StepStatus,
     SubprocessAgentBackend,
 )
 from .claude import ClaudeCodeBackend
@@ -26,8 +23,5 @@ __all__ = [
     "ClaudeCodeBackend",
     "CodexAgentBackend",
     "CursorAgentBackend",
-    "FileChange",
-    "StepResult",
-    "StepStatus",
     "SubprocessAgentBackend",
 ]

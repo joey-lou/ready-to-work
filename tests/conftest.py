@@ -1,18 +1,12 @@
 """Pytest fixtures for rtw test suite."""
 
 import pytest
-from helpers import (
-    APPROVE_RESPONSE,
-    PLAN_RESPONSE,
-    MockAgentBackend,
-    make_architect_flow,
-    make_state,
-)
+from helpers import MockAgentBackend, make_architect_flow, make_state
 
 
 @pytest.fixture
 def mock_agent():
-    return MockAgentBackend(responses={"architect": PLAN_RESPONSE, "reviewer": APPROVE_RESPONSE})
+    return MockAgentBackend()
 
 
 @pytest.fixture

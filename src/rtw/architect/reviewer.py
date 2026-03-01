@@ -1,205 +1,163 @@
-"""Reviewer node for rtw architect loop."""
+"""Reviewer node: reviews against SUBTASK.md; updates subtask_status/blocking_reason in state.json."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from rtw.agent import AgentBackend, AgentError
-from rtw.core import FlowStatus, Node, SharedState
+from rtw.architect.prompts import REVIEWER
+from rtw.core import FlowStatus, Node, SharedState, SubtaskStatus
+from rtw.core.paths import STATE_JSON, SUBTASK_MD, run_paths
+from rtw.core.trace import append_agent_trace
 
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE_FOR_REVIEW = 10000  # chars
-MAX_TOTAL_FILE_CONTENT = 50000  # chars total across all files
+MAX_FILE_SIZE = 10000
+MAX_TOTAL_SIZE = 50000
 
-REVIEWER_SYSTEM = """You are a senior code reviewer and QA engineer.
 
-## Your Role
-Evaluate build results against original requirements. Your review guides the next iteration.
+def _read(path: Path) -> str:
+    return path.read_text() if path.exists() else ""
 
-## Review Strategy
-1. COMPARE: Check each requirement against what was built
-2. VERIFY: Look at actual file contents to confirm implementation quality
-3. ASSESS: Identify what works, what's missing, what needs fixing
-4. GUIDE: Provide actionable feedback for the next iteration
 
-## Verdict Guidelines
-- "approve": All core requirements met, code is functional and reasonably clean
-- "iterate": Progress was made but more work needed. Be specific about what's missing.
-- "blocked": Cannot proceed without human intervention (missing credentials, unclear requirements, external dependency unavailable)
+def _read_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
 
-## Budget Awareness
-Consider iterations remaining when reviewing:
-- Many iterations left: Be thorough, flag all issues
-- Few iterations left: Focus on critical issues only, defer nice-to-haves
-- Last iteration: Only block for truly critical problems
 
-## Output Format
-Return ONLY valid JSON (no markdown, no explanation):
-{
-    "verdict": "approve|iterate|blocked",
-    "score": 0-100,
-    "summary": "One-line assessment of the work",
-    "assessment": "Detailed markdown assessment. Cover: what was built correctly, what is missing or broken, and specific recommendations for the next iteration. Write freely -- this will be read by the planning agent to guide its next steps.",
-    "blocking_reason": "If verdict is 'blocked', explain why human intervention is needed. Otherwise null."
-}"""
+def _build_reviewer_prompt(  # noqa: PLR0913
+    run_dir: Path,
+    task: str,
+    plan: str,
+    subtask: str,
+    files_changed: list[dict],
+    file_contents: dict[str, str],
+    iteration: int,
+    max_iter: int,
+) -> str:
+    changed_paths = "\n".join(f"- {c.get('path', '')}" for c in files_changed)
+    file_contents_block = "\n\n".join(
+        f"## {path}\n```\n{content}\n```" for path, content in file_contents.items()
+    )
+    return REVIEWER.format(
+        state_path=run_dir / STATE_JSON,
+        task=task,
+        plan=plan or "(none)",
+        subtask=subtask or "(none)",
+        changed_paths=changed_paths,
+        file_contents_block=file_contents_block or "(no files)",
+        iteration=iteration,
+        max_iter=max_iter,
+        subtask_path=run_dir / SUBTASK_MD,
+    )
 
 
 class ReviewerNode(Node):
-    """Reviews build results against requirements and decides next action.
-
-    Only machine-parses verdict/score/blocking_reason for routing.
-    The full assessment flows as text to the planner.
-    """
-
     def __init__(self, agent: AgentBackend):
         super().__init__("Reviewer")
         self.agent = agent
 
     def prep(self, state: SharedState) -> dict[str, Any]:
-        """Gather all context for review."""
         state.status = FlowStatus.REVIEWING
-
-        record = state.current_record()
-
-        artifact_contents = self._read_artifact_contents(state.workspace, state.artifacts)
+        paths = run_paths(state.run_dir)
+        changed_files = state.files_changed
 
         return {
-            "task_content": state.task_content,
-            "plan": record.plan if record else None,
-            "build_result": record.build_result if record else None,
+            "workspace": Path(state.workspace),
+            "run_dir": Path(state.run_dir),
+            "paths": paths,
+            "task": _read(paths["TASK"]),
+            "plan": _read(paths["PLAN"]),
+            "subtask": _read(paths["SUBTASK"]),
+            "files_changed": changed_files,
+            "file_contents": self._read_changed(state.workspace, changed_files),
             "iteration": state.current_iteration,
             "max_iterations": state.max_iterations,
-            "iterations_remaining": state.max_iterations - state.current_iteration,
-            "artifacts": [{"path": a.path, "action": a.action} for a in state.artifacts],
-            "artifact_contents": artifact_contents,
-            "history_length": len(state.history),
-            "lessons_learned": state.get_lessons_summary(),
         }
 
-    def _read_artifact_contents(self, workspace: str, artifacts: list) -> dict[str, str]:
-        """Read contents of artifact files for review (within size limits)."""
-        contents: dict[str, str] = {}
-        total_size = 0
-
-        for artifact in artifacts:
-            if artifact.action == "deleted":
-                continue
-
-            file_path = Path(workspace) / artifact.path
-            if not file_path.exists():
-                contents[artifact.path] = "(file not found)"
-                continue
-
-            if not file_path.is_file():
-                continue
-
-            try:
-                file_size = file_path.stat().st_size
-                if file_size > MAX_FILE_SIZE_FOR_REVIEW:
-                    contents[artifact.path] = f"(file too large: {file_size} bytes)"
-                    continue
-
-                if total_size + file_size > MAX_TOTAL_FILE_CONTENT:
-                    contents[artifact.path] = "(skipped: total content limit reached)"
-                    continue
-
-                content = file_path.read_text(errors="replace")
-                contents[artifact.path] = content
-                total_size += len(content)
-
-            except OSError as e:
-                contents[artifact.path] = f"(error reading: {e})"
-
-        return contents
-
     def exec(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Evaluate build results via LLM."""
-        prompt = self._build_prompt(context)
-
+        run_dir = context["run_dir"]
+        full_prompt = _build_reviewer_prompt(
+            run_dir,
+            context["task"],
+            context["plan"],
+            context["subtask"],
+            context["files_changed"],
+            context["file_contents"],
+            context["iteration"],
+            context["max_iterations"],
+        )
         logger.info("Reviewing iteration %d", context["iteration"])
         try:
-            return self.agent.complete_json(prompt, system=REVIEWER_SYSTEM)
-        except AgentError as e:
-            logger.error("Review failed: %s", e)
+            result = self.agent.execute(context["workspace"], full_prompt, run_dir=run_dir)
+            return {
+                "success": result.success,
+                "output": result.output,
+                "error": result.error,
+                "prompt": full_prompt,
+            }
+        except AgentError as exc:
+            logger.error("Review failed: %s", exc)
             raise
 
-    def post(self, state: SharedState, prep_result: dict, exec_result: dict) -> str | None:
-        """Process review verdict and route accordingly."""
-        record = state.current_record()
-        if record:
-            record.review_result = exec_result
+    def post(
+        self, state: SharedState, prep_result: dict[str, Any], exec_result: dict[str, Any]
+    ) -> str | None:
+        paths = run_paths(state.run_dir)
+        data = _read_state(paths["state_file"])
 
-        verdict = exec_result.get("verdict", "iterate")
-        score = exec_result.get("score", 0)
-        summary = exec_result.get("summary", "")
-
-        logger.info("Review verdict: %s (score: %s)", verdict, score)
-
-        if summary:
-            state.add_lesson("review", f"[score={score}] {summary}")
-
-        match verdict:
-            case "approve":
-                state.status = FlowStatus.COMPLETED
-                state.final_summary = summary or "Task completed successfully"
-                logger.info("Task approved - flow complete")
-                return None
-            case "blocked":
-                state.status = FlowStatus.BLOCKED
-                state.blocking_reason = exec_result.get("blocking_reason", "Unknown blocking issue")
-                logger.warning("Task blocked: %s", state.blocking_reason)
-                return None
-            case _:  # iterate
-                assessment = exec_result.get("assessment", summary)
-                logger.info("Iteration needed: %s", (assessment or "")[:100])
-                state.touch()
-                return "plan"
-
-    def _build_prompt(self, context: dict[str, Any]) -> str:
-        iterations_remaining = context.get("iterations_remaining", 10)
-        budget_guidance = ""
-        if iterations_remaining <= 2:
-            budget_guidance = (
-                "LOW BUDGET: Focus only on critical issues. Minor improvements can be deferred."
-            )
-        if iterations_remaining == 1:
-            budget_guidance = "LAST ITERATION: Only block for truly critical problems. Approve if core functionality works."
-
-        parts = [
-            "# Original Requirements\n",
-            context["task_content"],
-            "\n# Implementation Plan\n",
-            str(context.get("plan", {})),
-            "\n# Build Results\n",
-            str(context.get("build_result", {})),
-            "\n# Artifacts Created\n",
-        ]
-
-        for artifact in context.get("artifacts", []):
-            parts.append(f"- {artifact['action']}: {artifact['path']}")
-
-        artifact_contents = context.get("artifact_contents", {})
-        if artifact_contents:
-            parts.append("\n# File Contents (for verification)\n")
-            for path, content in artifact_contents.items():
-                if content.startswith("("):
-                    parts.append(f"## {path}\n{content}\n")
-                else:
-                    parts.append(f"## {path}\n```\n{content}\n```\n")
-
-        if context.get("lessons_learned"):
-            parts.append(f"\n{context['lessons_learned']}")
-
-        parts.extend(
-            [
-                "\n# Iteration Info",
-                f"- Current iteration: {context['iteration']} of {context['max_iterations']}",
-                f"- Iterations remaining: {iterations_remaining}",
-                f"- {budget_guidance}" if budget_guidance else "",
-                f"- Total history entries: {context['history_length']}",
-                "\n\nReview this work and provide your verdict as JSON.",
-            ]
+        append_agent_trace(
+            state.run_dir,
+            stage="REVIEWER",
+            iteration=state.current_iteration,
+            prompt=exec_result.get("prompt"),
+            output=exec_result.get("output"),
         )
 
-        return "\n".join(parts)
+        decision = str(data.get("subtask_status", "REVISE")).strip().upper()
+        if not exec_result.get("success", True):
+            decision = "BLOCKED"
+
+        if decision == "BLOCKED":
+            state.status = FlowStatus.BLOCKED
+            state.subtask_status = SubtaskStatus.BLOCKED
+            state.blocking_reason = str(data.get("blocking_reason") or "Reviewer marked blocked")
+            state.touch()
+            return None
+
+        if decision == "PASSED":
+            state.subtask_status = SubtaskStatus.PASSED
+            state.status = FlowStatus.PENDING
+            state.touch()
+            return "plan"
+
+        state.subtask_status = SubtaskStatus.REVISE
+        state.status = FlowStatus.PENDING
+        state.touch()
+        return "execute"
+
+    def _read_changed(self, workspace: str, changed: list[dict]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        total = 0
+        for item in changed:
+            p = Path(workspace) / item.get("path", "")
+            if not p.exists() or not p.is_file():
+                continue
+            try:
+                size = p.stat().st_size
+                if size > MAX_FILE_SIZE:
+                    out[item.get("path", "")] = f"(file too large: {size} bytes)"
+                    continue
+                if total + size > MAX_TOTAL_SIZE:
+                    out[item.get("path", "")] = "(skipped: limit reached)"
+                    continue
+                out[item.get("path", "")] = p.read_text(errors="replace")
+                total += size
+            except OSError as e:
+                out[item.get("path", "")] = f"(error: {e})"
+        return out
