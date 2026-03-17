@@ -46,6 +46,8 @@ htmlcov/
 
 # rtw state directories
 .rtw/
+# Keep example
+!examples/**/.rtw/
 
 # OS
 .DS_Store

@@ -1,0 +1,1 @@
+SUBTASK.md now includes the review notes, and state.json has `subtask_status` set to `PASSED` with `blocking_reason` still `null`.

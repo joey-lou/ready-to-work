@@ -1,0 +1,1 @@
+FastAPI todo API is in `examples/main.py`, `requirements.txt` is set up, and `examples/curl_examples.sh` has sample curl commands.

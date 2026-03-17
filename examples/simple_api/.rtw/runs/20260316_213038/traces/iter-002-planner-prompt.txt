@@ -1,0 +1,90 @@
+You are the Planner.
+Read TASK.md, maintain PLAN.md, write one active SUBTASK.md.
+If done, write SUMMARY.md.
+
+Update state.json at /Users/joeylou/sandbox/projects/ready-to-work/examples/.rtw/runs/20260316_213038/state.json: read it, set only plan_status (IN_PROGRESS|COMPLETED|BLOCKED) and blocking_reason.
+Preserve all other keys.
+Do NOT summarize or repeat in your response; only edit files.
+Reply with at most one short line (e.g. Done.).
+
+# TASK.md
+# Task: Create a Simple REST API
+
+## Overview
+Build a minimal REST API for managing a todo list.
+
+## Requirements
+
+### Functional
+- Create a FastAPI-based REST API
+- Implement CRUD operations for "tasks" (not to be confused with devflow tasks)
+- Each task has: id, title, description, completed (boolean), created_at
+- Store data in-memory (dict/list) for simplicity
+
+### Endpoints
+- `GET /tasks` - List all tasks
+- `GET /tasks/{id}` - Get single task
+- `POST /tasks` - Create task
+- `PUT /tasks/{id}` - Update task
+- `DELETE /tasks/{id}` - Delete task
+
+### Technical
+- Python 3.11+
+- FastAPI with Pydantic models
+- Proper error handling (404 for missing tasks)
+- Return JSON responses
+
+## Constraints
+- No database required (in-memory storage is fine)
+- No authentication needed
+- Keep it simple - single file is acceptable
+
+## Success Criteria
+- All 5 endpoints work correctly
+- Proper HTTP status codes (200, 201, 404)
+- Clean, readable code
+- Can be tested with curl or similar
+
+
+# PLAN.md
+# Plan: Simple REST API (Todo list)
+
+## 1. Scope
+- Single FastAPI app (single file acceptable)
+- In-memory store: dict keyed by task id
+- Pydantic models for request/response
+
+## 2. Implementation steps
+1. **Implement API and storage** – FastAPI app with Pydantic task model (id, title, description, completed, created_at), in-memory dict, and all five CRUD endpoints with correct status codes (200, 201, 404). Add requirements (FastAPI, uvicorn). Optional: minimal tests or curl commands.
+
+## 3. Done when
+- All 5 endpoints work; status codes correct; code in project root (not under .rtw/).
+
+
+# SUBTASK.md
+# Active subtask
+
+Implement the FastAPI todo REST API in the **workspace (project root)**.
+
+- Create `main.py` (or single app file) with FastAPI app, Pydantic model for tasks (id, title, description, completed, created_at), in-memory storage (dict/list), and endpoints: `GET /tasks`, `GET /tasks/{id}`, `POST /tasks`, `PUT /tasks/{id}`, `DELETE /tasks/{id}`. Return JSON; use 200/201/404 as appropriate; raise HTTPException for missing task.
+- Add `requirements.txt` with FastAPI and uvicorn (and pydantic if needed).
+- Optionally add a minimal test or curl examples to verify the endpoints.
+
+Do not create implementation files under `.rtw/` or this run directory.
+
+---
+
+## Review findings
+
+- **main.py**: FastAPI app with Task/TaskCreate Pydantic models (id, title, description, completed, created_at), in-memory `tasks` dict, all five CRUD endpoints; 201 on POST, 404 via HTTPException for missing task; JSON responses.
+- **requirements.txt**: FastAPI, uvicorn, pydantic present.
+- **curl_examples.sh**: Optional curl examples added.
+- Implementation under workspace root (examples/), not under .rtw/. **PASSED.**
+
+
+# Iteration 2 of 10
+Outputs: edit /Users/joeylou/sandbox/projects/ready-to-work/examples/.rtw/runs/20260316_213038/PLAN.md, /Users/joeylou/sandbox/projects/ready-to-work/examples/.rtw/runs/20260316_213038/SUBTASK.md.
+If complete, write SUMMARY.md.
+Update /Users/joeylou/sandbox/projects/ready-to-work/examples/.rtw/runs/20260316_213038/state.json: read it, set only plan_status and blocking_reason. Preserve all other keys. Write state.json back.
+
+When writing SUBTASK.md, direct the Executor to create implementation files (code, requirements, tests) in the workspace (project root), never under .rtw/ or the run directory.

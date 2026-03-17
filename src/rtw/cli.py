@@ -246,7 +246,7 @@ def list_runs(workspace: Path, max_count: int = 5, reverse: bool = False) -> int
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="rtw (ready-to-work) - Architect loop for AI-driven development",
+        description="Ready to work!? - Architect loop for AI-driven development",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
