@@ -22,6 +22,15 @@ def _git_init(workspace: Path) -> None:
     git = shutil.which("git")
     assert git is not None
     subprocess.run([git, "init", "-q", str(workspace)], check=True)
+    # Local identity so `git commit` works in CI (no global user.name / user.email).
+    subprocess.run(
+        [git, "-C", str(workspace), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        [git, "-C", str(workspace), "config", "user.name", "Test User"],
+        check=True,
+    )
 
 
 @pytest.fixture()
