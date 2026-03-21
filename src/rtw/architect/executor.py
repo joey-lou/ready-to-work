@@ -1,13 +1,14 @@
 """Executor node: runs SUBTASK.md; sets state.files_changed for reviewer."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Any
 
-from rtw.agent import AgentBackend, AgentResult
+from rtw.agent import AgentBackend, AgentError
 from rtw.architect.prompts import EXECUTOR
 from rtw.core import FlowStatus, Node, SharedState, SubtaskStatus
+from rtw.core.changes import create_tracker
+from rtw.core.io import relpath_or_abs
 from rtw.core.paths import run_paths
 from rtw.core.trace import append_agent_trace
 
@@ -23,6 +24,10 @@ class ExecutorNode(Node):
         state.status = FlowStatus.EXECUTING
         paths = run_paths(state.run_dir)
         subtask_path = paths["SUBTASK"]
+
+        tracker = create_tracker(Path(state.workspace))
+        tracker.snapshot()
+
         return {
             "workspace": Path(state.workspace),
             "run_dir": Path(state.run_dir),
@@ -32,73 +37,60 @@ class ExecutorNode(Node):
             "subtask_markdown": subtask_path.read_text() if subtask_path.exists() else "",
             "iteration": state.current_iteration,
             "max_iterations": state.max_iterations,
-            "git_before": _git_status_lines(Path(state.workspace)),
+            "tracker": tracker,
         }
 
-    def exec(self, prep_result: dict[str, Any]) -> AgentResult:
+    def exec(self, prep_result: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_executor_prompt(prep_result)
         logger.info("Executing subtask iteration %d", prep_result["iteration"])
-        return self.agent.execute(
-            prep_result["workspace"],
-            prompt,
-            run_dir=prep_result["run_dir"],
-        )
+        try:
+            result = self.agent.execute(
+                prep_result["workspace"],
+                prompt,
+                run_dir=prep_result["run_dir"],
+            )
+            return {
+                "success": result.success,
+                "output": result.output,
+                "error": result.error,
+                "prompt": prompt,
+            }
+        except AgentError as exc:
+            logger.error("Executor failed: %s", exc)
+            raise
 
     def post(
-        self, state: SharedState, prep_result: dict[str, Any], exec_result: AgentResult
+        self, state: SharedState, prep_result: dict[str, Any], exec_result: dict[str, Any]
     ) -> str:
-        changed = _git_changed_paths(
-            prep_result["git_before"],
-            _git_status_lines(prep_result["workspace"]),
-        )
-        state.files_changed = [{"path": p, "action": "modified"} for p in changed]
+        tracker = prep_result["tracker"]
+        changes = tracker.changes()
+        state.files_changed = [{"path": c.path, "action": c.action} for c in changes]
 
         append_agent_trace(
             state.run_dir,
             stage="EXECUTOR",
             iteration=state.current_iteration,
-            prompt=_build_executor_prompt(prep_result),
-            output=exec_result.output,
+            prompt=exec_result.get("prompt"),
+            output=exec_result.get("output"),
         )
 
-        state.subtask_status = (
-            SubtaskStatus.NEEDS_REVIEW if exec_result.success else SubtaskStatus.BLOCKED
-        )
+        ok = exec_result.get("success", False)
+        if not ok:
+            state.subtask_status = SubtaskStatus.BLOCKED
+            state.status = FlowStatus.BLOCKED
+            state.blocking_reason = str(exec_result.get("error") or "Executor reported failure")
+            state.touch()
+            return None
+        state.subtask_status = SubtaskStatus.NEEDS_REVIEW
         state.status = FlowStatus.PENDING
         state.touch()
         return "review"
 
 
-def _git_status_lines(workspace: Path) -> set[str]:
-    try:
-        r = subprocess.run(
-            ["git", "status", "--porcelain"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            cwd=str(workspace),
-            check=False,
-        )
-    except OSError:
-        return set()
-    return (
-        {line for line in (r.stdout or "").splitlines() if line.strip()}
-        if r.returncode == 0
-        else set()
-    )
-
-
-def _git_changed_paths(before: set[str], after: set[str]) -> list[str]:
-    paths = []
-    for line in sorted(after - before):
-        if len(line) >= 4:
-            paths.append(line[3:].strip())
-    return paths
-
-
 def _build_executor_prompt(prep_result: dict[str, Any]) -> str:
     tmp_dir = prep_result.get("run_tmp_dir") or prep_result["run_dir"] / "tmp"
+    tmp_dir_rel = relpath_or_abs(Path(tmp_dir), prep_result["workspace"])
     return EXECUTOR.format(
-        workspace_path=prep_result["workspace"],
-        tmp_dir=tmp_dir,
+        tmp_dir_rel=tmp_dir_rel,
         subtask_markdown=prep_result["subtask_markdown"],
     )

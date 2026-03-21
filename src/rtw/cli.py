@@ -121,6 +121,7 @@ def run_task(
 ) -> int:
     """Execute the architect loop on a task file."""
     logger = logging.getLogger("rtw")
+    workspace = workspace.resolve()
 
     if not task_file.exists():
         logger.error("Task file not found: %s", task_file)
@@ -163,6 +164,7 @@ def resume_run(
 ) -> int:
     """Resume a previous run from persisted state."""
     logger = logging.getLogger("rtw")
+    workspace = workspace.resolve()
 
     if run_id:
         storage = StateStorage(workspace, run_id)

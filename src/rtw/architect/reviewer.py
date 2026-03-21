@@ -1,6 +1,5 @@
 """Reviewer node: reviews against SUBTASK.md; updates subtask_status/blocking_reason in state.json."""
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -8,7 +7,9 @@ from typing import Any
 from rtw.agent import AgentBackend, AgentError
 from rtw.architect.prompts import REVIEWER
 from rtw.core import FlowStatus, Node, SharedState, SubtaskStatus
-from rtw.core.paths import STATE_JSON, SUBTASK_MD, run_paths
+from rtw.core.gatekeeper import retry_with_corrections, validate_reviewer_output
+from rtw.core.io import read_json_dict, read_text_if_exists, relpath_or_abs
+from rtw.core.paths import run_paths
 from rtw.core.trace import append_agent_trace
 
 logger = logging.getLogger(__name__)
@@ -17,20 +18,35 @@ MAX_FILE_SIZE = 10000
 MAX_TOTAL_SIZE = 50000
 
 
-def _read(path: Path) -> str:
-    return path.read_text() if path.exists() else ""
-
-
-def _read_state(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
+def read_changed_workspace_files(workspace: str, changed: list[dict]) -> dict[str, str]:
+    """Load contents of changed files under workspace (size-limited)."""
+    out: dict[str, str] = {}
+    total = 0
+    for item in changed:
+        p = Path(workspace) / item.get("path", "")
+        if not p.exists() or not p.is_file():
+            continue
+        try:
+            size = p.stat().st_size
+            if size > MAX_FILE_SIZE:
+                out[item.get("path", "")] = f"(file too large: {size} bytes)"
+                continue
+            if total + size > MAX_TOTAL_SIZE:
+                out[item.get("path", "")] = "(skipped: limit reached)"
+                continue
+            text = p.read_text(errors="replace")
+            if "\x00" in text:
+                out[item.get("path", "")] = "(binary file)"
+                continue
+            out[item.get("path", "")] = text
+            total += size
+        except OSError as e:
+            out[item.get("path", "")] = f"(error: {e})"
+    return out
 
 
 def _build_reviewer_prompt(  # noqa: PLR0913
+    workspace: Path,
     run_dir: Path,
     task: str,
     plan: str,
@@ -45,7 +61,7 @@ def _build_reviewer_prompt(  # noqa: PLR0913
         f"## {path}\n```\n{content}\n```" for path, content in file_contents.items()
     )
     return REVIEWER.format(
-        state_path=run_dir / STATE_JSON,
+        run_dir_rel=relpath_or_abs(run_dir, workspace),
         task=task,
         plan=plan or "(none)",
         subtask=subtask or "(none)",
@@ -53,7 +69,6 @@ def _build_reviewer_prompt(  # noqa: PLR0913
         file_contents_block=file_contents_block or "(no files)",
         iteration=iteration,
         max_iter=max_iter,
-        subtask_path=run_dir / SUBTASK_MD,
     )
 
 
@@ -71,11 +86,11 @@ class ReviewerNode(Node):
             "workspace": Path(state.workspace),
             "run_dir": Path(state.run_dir),
             "paths": paths,
-            "task": _read(paths["TASK"]),
-            "plan": _read(paths["PLAN"]),
-            "subtask": _read(paths["SUBTASK"]),
+            "task": read_text_if_exists(paths["TASK"]),
+            "plan": read_text_if_exists(paths["PLAN"]),
+            "subtask": read_text_if_exists(paths["SUBTASK"]),
             "files_changed": changed_files,
-            "file_contents": self._read_changed(state.workspace, changed_files),
+            "file_contents": read_changed_workspace_files(state.workspace, changed_files),
             "iteration": state.current_iteration,
             "max_iterations": state.max_iterations,
         }
@@ -83,6 +98,7 @@ class ReviewerNode(Node):
     def exec(self, context: dict[str, Any]) -> dict[str, Any]:
         run_dir = context["run_dir"]
         full_prompt = _build_reviewer_prompt(
+            context["workspace"],
             run_dir,
             context["task"],
             context["plan"],
@@ -109,7 +125,6 @@ class ReviewerNode(Node):
         self, state: SharedState, prep_result: dict[str, Any], exec_result: dict[str, Any]
     ) -> str | None:
         paths = run_paths(state.run_dir)
-        data = _read_state(paths["state_file"])
 
         append_agent_trace(
             state.run_dir,
@@ -119,6 +134,20 @@ class ReviewerNode(Node):
             output=exec_result.get("output"),
         )
 
+        gate_result = validate_reviewer_output(Path(state.run_dir))
+        if not gate_result.passed:
+            logger.warning("Reviewer output validation failed: %d issues", len(gate_result.issues))
+            for issue in gate_result.issues:
+                logger.warning("  %s [%s]: %s", issue.document, issue.level, issue.message)
+            retry_with_corrections(
+                self.agent,
+                Path(state.workspace),
+                Path(state.run_dir),
+                gate_result.issues,
+                validate=validate_reviewer_output,
+            )
+
+        data = read_json_dict(paths["state_file"])
         decision = str(data.get("subtask_status", "REVISE")).strip().upper()
         if not exec_result.get("success", True):
             decision = "BLOCKED"
@@ -140,24 +169,3 @@ class ReviewerNode(Node):
         state.status = FlowStatus.PENDING
         state.touch()
         return "execute"
-
-    def _read_changed(self, workspace: str, changed: list[dict]) -> dict[str, str]:
-        out: dict[str, str] = {}
-        total = 0
-        for item in changed:
-            p = Path(workspace) / item.get("path", "")
-            if not p.exists() or not p.is_file():
-                continue
-            try:
-                size = p.stat().st_size
-                if size > MAX_FILE_SIZE:
-                    out[item.get("path", "")] = f"(file too large: {size} bytes)"
-                    continue
-                if total + size > MAX_TOTAL_SIZE:
-                    out[item.get("path", "")] = "(skipped: limit reached)"
-                    continue
-                out[item.get("path", "")] = p.read_text(errors="replace")
-                total += size
-            except OSError as e:
-                out[item.get("path", "")] = f"(error: {e})"
-        return out

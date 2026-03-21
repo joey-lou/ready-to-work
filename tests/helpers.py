@@ -8,6 +8,32 @@ from rtw.agent import AgentBackend, AgentResult
 from rtw.cli import create_flow
 from rtw.core import Flow, SharedState
 
+_VALID_PLAN = """# Plan
+
+## Steps
+1. One step
+
+## Lessons
+
+"""
+
+_VALID_SUBTASK = """# Subtask
+
+## Acceptance criteria
+- [ ] criterion
+
+"""
+
+_VALID_SUBTASK_REVIEWED = """# Subtask
+
+## Acceptance criteria
+- [x] criterion
+
+## Review
+Passed.
+
+"""
+
 
 class MockAgentBackend(AgentBackend):
     """Mock backend for tests. Writes state.json/PLAN/SUBTASK based on prompt (Planner/Reviewer)."""
@@ -41,8 +67,8 @@ class MockAgentBackend(AgentBackend):
             data["plan_status"] = self.plan_status
             data["blocking_reason"] = None
             state_file.write_text(json.dumps(data, indent=2))
-            (target / "PLAN.md").write_text("# Plan\nDone.")
-            (target / "SUBTASK.md").write_text("# Subtask\nDone.")
+            (target / "PLAN.md").write_text(_VALID_PLAN)
+            (target / "SUBTASK.md").write_text(_VALID_SUBTASK)
         if "Reviewer" in prompt and run_dir:
             target = Path(run_dir)
             target.mkdir(parents=True, exist_ok=True)
@@ -50,6 +76,7 @@ class MockAgentBackend(AgentBackend):
             data["subtask_status"] = "PASSED"
             data["blocking_reason"] = None
             state_file.write_text(json.dumps(data, indent=2))
+            (target / "SUBTASK.md").write_text(_VALID_SUBTASK_REVIEWED)
         return AgentResult(success=True, output="Done.")
 
 

@@ -16,13 +16,17 @@ def test_save_and_load_round_trip():
         state = SharedState(
             workspace=tmpdir,
             run_dir=str(storage.base_dir),
+            run_tmp_dir=str(storage.tmp_dir),
             current_iteration=2,
         )
         storage.save(state)
+        raw = json.loads(storage.state_file.read_text())
+        assert raw["run_dir"] == ".rtw/runs/run1"
+        assert raw["run_tmp_dir"] == ".rtw/runs/run1/tmp"
         loaded = storage.load()
     assert loaded is not None
     assert loaded.workspace == tmpdir
-    assert loaded.run_dir == str(storage.base_dir)
+    assert Path(loaded.run_dir).resolve() == Path(storage.base_dir).resolve()
     assert loaded.current_iteration == 2
     assert loaded.task_content.strip().startswith("# Task")
 

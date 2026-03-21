@@ -38,8 +38,10 @@ class Flow:
         logger.info("Starting flow '%s' from node '%s'", self.name, current_node.name)
 
         while current_node is not None:
-            if self._check_max_iterations(state):
+            if current_node.increments_iteration and self._block_if_max_planning_rounds(state):
                 break
+            if current_node.increments_iteration:
+                state.start_iteration()
             logger.info("Executing node: %s", current_node.name)
             try:
                 action = current_node.run(state)
@@ -53,14 +55,14 @@ class Flow:
 
         return state
 
-    def _check_max_iterations(self, state: SharedState) -> bool:
-        """Set blocked state and return True if max iterations reached."""
+    def _block_if_max_planning_rounds(self, state: SharedState) -> bool:
+        """Before a planning round, block if the limit is already reached."""
         if state.current_iteration < state.max_iterations:
             return False
-        logger.warning("Max iterations (%d) reached", state.max_iterations)
+        logger.warning("Max planning rounds (%d) reached", state.max_iterations)
         state.status = FlowStatus.BLOCKED
         state.blocking_reason = (
-            f"Max iterations ({state.max_iterations}) reached without completion"
+            f"Max planning rounds ({state.max_iterations}) reached without completion"
         )
         return True
 

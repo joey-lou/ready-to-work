@@ -19,6 +19,8 @@ class Node(ABC):
     def __init__(self, name: str | None = None):
         self.name = name or self.__class__.__name__
         self.successors: dict[str, Node] = {}
+        #: If True, Flow increments current_iteration before this node and enforces max_iterations.
+        self.increments_iteration: bool = False
 
     def prep(self, state: SharedState) -> Any:
         """Prepare inputs from shared state. Override in subclasses."""

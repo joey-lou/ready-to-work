@@ -11,6 +11,10 @@ from rtw.agent import AgentResult
 from rtw.core import FlowStatus, SharedState
 from rtw.storage import StateStorage
 
+_GK_PLAN = "# Plan\n\n## Steps\n1. S\n\n## Lessons\n\n"
+_GK_SUB = "# Subtask\n\n## Acceptance criteria\n- [ ] a\n"
+_GK_SUB_OK = "# Subtask\n\n## Acceptance criteria\n- [x] a\n\n## Review\nOk.\n"
+
 
 def test_run_task_flow_exception_returns_one():
     """run_task when flow raises returns 1."""
@@ -87,11 +91,12 @@ def test_two_iteration_cycle_then_complete():
                 call_count["n"] += 1
                 data["plan_status"] = "COMPLETED" if call_count["n"] >= 2 else "IN_PROGRESS"
                 data["blocking_reason"] = None
-                (target / "PLAN.md").write_text("# Plan\n")
-                (target / "SUBTASK.md").write_text("# Subtask\n")
+                (target / "PLAN.md").write_text(_GK_PLAN)
+                (target / "SUBTASK.md").write_text(_GK_SUB)
             if "Reviewer" in prompt:
                 data["subtask_status"] = "PASSED"
                 data["blocking_reason"] = None
+                (target / "SUBTASK.md").write_text(_GK_SUB_OK)
             state_file.write_text(json.dumps(data, indent=2))
             return AgentResult(success=True, output="Ok")
 
@@ -121,11 +126,12 @@ def test_persistence_writes_iter_snapshots_on_reviewer_passed():
             if "Planner" in prompt:
                 d["plan_status"] = "IN_PROGRESS"
                 d["blocking_reason"] = None
-                (target / "PLAN.md").write_text("# Plan\n")
-                (target / "SUBTASK.md").write_text("# Subtask\n")
+                (target / "PLAN.md").write_text(_GK_PLAN)
+                (target / "SUBTASK.md").write_text(_GK_SUB)
             if "Reviewer" in prompt:
                 d["subtask_status"] = "PASSED"
                 d["blocking_reason"] = None
+                (target / "SUBTASK.md").write_text(_GK_SUB_OK)
             state_file.write_text(json.dumps(d, indent=2))
             return AgentResult(success=True, output="Ok")
 

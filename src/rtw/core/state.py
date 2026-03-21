@@ -3,7 +3,28 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
+
+
+def _resolve_path_under_workspace(workspace: str, stored: str) -> str:
+    """Resolve a path from state.json: relative paths are under workspace; absolute is legacy."""
+    p = Path(stored)
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((Path(workspace).resolve() / p).resolve())
+
+
+def _path_for_persist(workspace: str, path_str: str | None) -> str | None:
+    """Store run_dir / run_tmp_dir workspace-relative when possible (portable state.json)."""
+    if path_str is None:
+        return None
+    ws = Path(workspace).resolve()
+    path = Path(path_str).resolve()
+    try:
+        return path.relative_to(ws).as_posix()
+    except ValueError:
+        return str(path)
 
 
 class FlowStatus(Enum):
@@ -57,8 +78,8 @@ class SharedState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "workspace": self.workspace,
-            "run_dir": self.run_dir,
-            "run_tmp_dir": self.run_tmp_dir,
+            "run_dir": _path_for_persist(self.workspace, self.run_dir),
+            "run_tmp_dir": _path_for_persist(self.workspace, self.run_tmp_dir),
             "status": self.status.value,
             "plan_status": self.plan_status.value,
             "subtask_status": self.subtask_status.value,
@@ -71,10 +92,14 @@ class SharedState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SharedState":
+        ws = data["workspace"]
+        run_dir = _resolve_path_under_workspace(ws, data["run_dir"])
+        raw_tmp = data.get("run_tmp_dir")
+        run_tmp = _resolve_path_under_workspace(ws, raw_tmp) if raw_tmp else None
         return cls(
-            workspace=data["workspace"],
-            run_dir=data["run_dir"],
-            run_tmp_dir=data.get("run_tmp_dir"),
+            workspace=ws,
+            run_dir=run_dir,
+            run_tmp_dir=run_tmp,
             status=FlowStatus(data["status"]),
             plan_status=PlanStatus(data.get("plan_status", PlanStatus.NOT_STARTED.value)),
             subtask_status=SubtaskStatus(data.get("subtask_status", SubtaskStatus.DRAFT.value)),

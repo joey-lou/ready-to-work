@@ -1,1 +1,0 @@
-Planner run updated: PLAN.md and SUBTASK.md are in place, and state.json has been created with `plan_status: IN_PROGRESS` and `blocking_reason: null`.
