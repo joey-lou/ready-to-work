@@ -42,6 +42,12 @@ Issues identified by reviewing the codebase against `docs/ARCHITECTURE.md` and e
 | ~~24~~ | ~~PLAN.md embeds specific run ID~~ | Planner prompt: refer to tmp generically; no dated run folder names in steps. | Prompts ✓ |
 | ~~25~~ | ~~Weak acceptance criteria wording~~ | Planner template + gatekeeper skeleton stress objectively checkable criteria (commands/expected output or exact symbols/values). | Prompts ✓ |
 
+## ~~Resolved (change detection)~~
+
+| # | Topic | Resolution | Verified |
+|---|--------|------------|----------|
+| ~~26~~ | ~~GitTracker blind when workspace is repo subdir / untracked dir rollup~~ | `create_tracker()` uses `GitTracker` only when `git rev-parse --show-prefix` is empty (workspace is repo root); otherwise `SnapshotTracker`. `GitTracker` runs `git status --porcelain --untracked-files=all`. | `test_changes.py` ✓ ; Run `20260321_102726` ✓ — reviewer prompt has file contents, `state.json` has populated `files_changed`. |
+
 ## Open
 
 (none)

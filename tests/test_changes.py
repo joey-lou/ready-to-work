@@ -13,6 +13,7 @@ from rtw.core.changes import (
     GitTracker,
     SnapshotTracker,
     _is_inside_git_repo,
+    _workspace_is_git_root,
     create_tracker,
 )
 
@@ -98,12 +99,45 @@ class TestCreateTracker:
         tracker = create_tracker(workspace)
         assert isinstance(tracker, SnapshotTracker)
 
-    def test_returns_git_tracker_in_subdirectory_of_repo(self, workspace: Path):
+    def test_returns_snapshot_tracker_in_subdirectory_of_repo(self, workspace: Path):
+        """Subfolder of a repo: git paths are repo-relative, not workspace-relative (ISSUE #26)."""
         _git_init(workspace)
         subdir = workspace / "deep" / "nested"
         subdir.mkdir(parents=True)
         tracker = create_tracker(subdir)
-        assert isinstance(tracker, GitTracker)
+        assert isinstance(tracker, SnapshotTracker)
+
+
+class TestGitTrackerUntrackedFiles:
+    def test_lists_nested_untracked_file_not_only_directory(self, workspace: Path):
+        """--untracked-files=all yields file paths under new dirs (reviewer can load them)."""
+        _git_init(workspace)
+        git = shutil.which("git")
+        assert git is not None
+        (workspace / "root.py").write_text("x")
+        subprocess.run([git, "-C", str(workspace), "add", "root.py"], check=True)
+        subprocess.run([git, "-C", str(workspace), "commit", "-q", "-m", "init"], check=True)
+
+        tracker = GitTracker(workspace)
+        tracker.snapshot()
+        nested = workspace / "pkg" / "nested.py"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("y")
+        changes = tracker.changes()
+        paths = {c.path for c in changes}
+        assert "pkg/nested.py" in paths or "pkg\\nested.py" in paths
+
+
+class TestWorkspaceIsGitRoot:
+    def test_true_at_repo_root(self, workspace: Path):
+        _git_init(workspace)
+        assert _workspace_is_git_root(workspace) is True
+
+    def test_false_in_subdirectory(self, workspace: Path):
+        _git_init(workspace)
+        sub = workspace / "sub"
+        sub.mkdir()
+        assert _workspace_is_git_root(sub) is False
 
 
 class TestIsInsideGitRepo:

@@ -1,6 +1,7 @@
 """Change detection for executor outputs. Git-first, snapshot fallback."""
 
 import os
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -58,9 +59,17 @@ class GitTracker(ChangeTracker):
 
     def _git_status_lines(self) -> set[str]:
         """Run git status --porcelain and return set of output lines."""
+        git = shutil.which("git")
+        if not git:
+            return set()
         try:
             result = subprocess.run(
-                ["git", "status", "--porcelain"],  # noqa: S607
+                [
+                    git,
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                ],
                 capture_output=True,
                 text=True,
                 cwd=str(self.workspace),
@@ -133,9 +142,12 @@ class SnapshotTracker(ChangeTracker):
 
 def _is_inside_git_repo(workspace: Path) -> bool:
     """Check if workspace is inside any git repo (not just at the root)."""
+    git = shutil.which("git")
+    if not git:
+        return False
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],  # noqa: S607
+            [git, "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
             cwd=str(workspace),
@@ -147,8 +159,29 @@ def _is_inside_git_repo(workspace: Path) -> bool:
         return False
 
 
+def _workspace_is_git_root(workspace: Path) -> bool:
+    """True when ``workspace`` is the repository root (paths match ``git status`` output)."""
+    git = shutil.which("git")
+    if not git:
+        return False
+    try:
+        result = subprocess.run(
+            [git, "rev-parse", "--show-prefix"],
+            capture_output=True,
+            text=True,
+            cwd=str(workspace),
+            check=False,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        return result.stdout.strip() == ""
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def create_tracker(workspace: Path) -> ChangeTracker:
-    """Factory: returns GitTracker if inside a git repo, else SnapshotTracker."""
-    if _is_inside_git_repo(workspace):
+    """Factory: GitTracker only at repo root; else SnapshotTracker (correct paths in subfolders)."""
+    if _is_inside_git_repo(workspace) and _workspace_is_git_root(workspace):
         return GitTracker(workspace)
     return SnapshotTracker(workspace)

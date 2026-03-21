@@ -194,9 +194,11 @@ The `ChangeTracker` module (`core/changes.py`) detects files modified by the exe
 
 ```
 create_tracker(workspace)
-  ├── git repo? → GitTracker (git status --porcelain, normalized to workspace-relative)
-  └── no git?   → SnapshotTracker (os.walk before/after, mtime+size diff)
+  ├── git repo AND workspace is repo root? → GitTracker (`git status --porcelain --untracked-files=all`)
+  └── otherwise                            → SnapshotTracker (os.walk before/after, mtime+size diff)
 ```
+
+`GitTracker` is only used when the workspace **is** the git root (`git rev-parse --show-prefix` empty). If RTW runs inside a subdirectory of a larger repo (e.g. a sample under `examples/`), porcelain paths would be relative to the repo root, not the workspace — `SnapshotTracker` avoids that mismatch. `--untracked-files=all` lists files inside new untracked directories instead of a single rolled-up `?? dir/` line.
 
 **Interface:**
 - `tracker.snapshot()` — called in executor `prep()` before the agent runs
