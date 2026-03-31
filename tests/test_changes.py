@@ -8,13 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from rtw.architect.reviewer import read_changed_workspace_files
+from rtw.architect.reviewer import read_changed_workspace_files, read_workspace_source_files
 from rtw.core.changes import (
     GitTracker,
     SnapshotTracker,
     _is_inside_git_repo,
     _workspace_is_git_root,
     create_tracker,
+    workspace_path_is_skipped,
 )
 
 
@@ -38,6 +39,13 @@ def workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
     return ws
+
+
+def test_workspace_path_is_skipped_common_artifacts():
+    assert workspace_path_is_skipped("target/debug/foo") is True
+    assert workspace_path_is_skipped("node_modules/x") is True
+    assert workspace_path_is_skipped(".venv/lib") is True
+    assert workspace_path_is_skipped("src/main.rs") is False
 
 
 class TestSnapshotTracker:
@@ -91,6 +99,14 @@ class TestSnapshotTracker:
         changes = tracker.changes()
         assert len(changes) == 0
 
+    def test_skips_target_directory(self, workspace: Path):
+        tracker = SnapshotTracker(workspace)
+        tracker.snapshot()
+        td = workspace / "target" / "debug"
+        td.mkdir(parents=True)
+        (td / "crate.d").write_text("x")
+        assert tracker.changes() == []
+
     def test_no_changes_when_unchanged(self, workspace: Path):
         (workspace / "stable.py").write_text("pass")
         tracker = SnapshotTracker(workspace)
@@ -135,6 +151,22 @@ class TestGitTrackerUntrackedFiles:
         changes = tracker.changes()
         paths = {c.path for c in changes}
         assert "pkg/nested.py" in paths or "pkg\\nested.py" in paths
+
+    def test_skips_paths_under_target(self, workspace: Path):
+        _git_init(workspace)
+        git = shutil.which("git")
+        assert git is not None
+        (workspace / "lib.rs").write_text("x")
+        subprocess.run([git, "-C", str(workspace), "add", "lib.rs"], check=True)
+        subprocess.run([git, "-C", str(workspace), "commit", "-q", "-m", "init"], check=True)
+
+        tracker = GitTracker(workspace)
+        tracker.snapshot()
+        artifact = workspace / "target" / "debug" / "foo.d"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("deps")
+        changes = tracker.changes()
+        assert all("target/" not in c.path.replace("\\", "/") for c in changes)
 
 
 class TestWorkspaceIsGitRoot:
@@ -187,3 +219,19 @@ class TestReadChangedWorkspaceFiles:
         (workspace / "huge.py").write_text("x" * 20000)
         result = read_changed_workspace_files(str(workspace), [{"path": "huge.py"}])
         assert "too large" in result["huge.py"]
+
+
+class TestReadWorkspaceSourceFiles:
+    def test_includes_project_files_skips_rtw_and_target(self, workspace: Path):
+        (workspace / "app.py").write_text("x = 1")
+        rtw = workspace / ".rtw"
+        rtw.mkdir()
+        (rtw / "state.json").write_text("{}")
+        td = workspace / "target" / "debug"
+        td.mkdir(parents=True)
+        (td / "app.d").write_text("deps")
+        out = read_workspace_source_files(str(workspace))
+        assert "app.py" in out
+        assert out["app.py"] == "x = 1"
+        assert not any(p.startswith("target/") for p in out)
+        assert ".rtw/state.json" not in out

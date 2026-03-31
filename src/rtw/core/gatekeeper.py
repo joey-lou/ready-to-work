@@ -13,6 +13,7 @@ from rtw.core.state import PlanStatus
 logger = logging.getLogger(__name__)
 
 MAX_RETRY_ATTEMPTS = 2
+_LESSONS_GATE_FILE = ".rtw_lessons_gate.json"
 
 _PLANNER_SKELETON = """PLAN.md format:
 ## Steps
@@ -28,6 +29,7 @@ SUBTASK.md format:
 
 ## Acceptance criteria
 - [ ] objectively checkable criterion (command + expected outcome, or exact symbols/values)
+- [ ] at least one behavior-level check (test output, runtime/smoke, or analysis—not only grep)
 - [ ] another criterion
 """
 
@@ -37,7 +39,7 @@ _REVIEWER_SKELETON = """SUBTASK.md post-review format:
 - [ ] criterion failed — one-line reason
 
 ## Review
-Brief findings.
+Brief findings (include code-quality notes even if criteria pass).
 
 (No TASK.md / PLAN.md / prompt dumps after ## Review.)
 """
@@ -94,7 +96,82 @@ def validate_planner_output(run_dir: Path) -> GateResult:
     issues.extend(_validate_state_json(state_path, "plan_status", _plan_status_valid_values()))
 
     errors = [iss for iss in issues if iss.level == "error"]
-    return GateResult(passed=len(errors) == 0, issues=issues, repairs_made=repairs)
+    passed = len(errors) == 0
+    if passed:
+        issues.extend(_lessons_stagnation_warnings(run_dir, plan_path))
+
+    return GateResult(passed=passed, issues=issues, repairs_made=repairs)
+
+
+def _normalize_lessons_body(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
+
+
+def _extract_lessons_section(plan_markdown: str) -> str:
+    match = re.search(
+        r"^##\s+Lessons\s*\n(.*?)(?=^##\s|\Z)",
+        plan_markdown,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    return _normalize_lessons_body(match.group(1))
+
+
+def _update_lessons_stagnation_state(run_dir: Path, plan_markdown: str) -> bool:
+    """
+    Persist ## Lessons body hash chain under run_dir/tmp/.
+
+    Returns True when the same non-empty lessons text has been seen for 2+ consecutive
+    planner passes (warn the planner).
+    """
+    lessons = _extract_lessons_section(plan_markdown)
+    gate_path = run_dir / "tmp" / _LESSONS_GATE_FILE
+    previous: str | None = None
+    consecutive = 0
+    if gate_path.exists():
+        try:
+            data = json.loads(gate_path.read_text(encoding="utf-8"))
+            previous = data.get("lessons_normalized")
+            consecutive = int(data.get("consecutive_same", 0))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.debug("Ignoring stale lessons gate file: %s", exc)
+
+    if not lessons:
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        gate_path.write_text(
+            json.dumps({"lessons_normalized": "", "consecutive_same": 0}),
+            encoding="utf-8",
+        )
+        return False
+
+    if previous is not None and lessons == previous:
+        consecutive += 1
+    else:
+        consecutive = 0
+
+    gate_path.parent.mkdir(parents=True, exist_ok=True)
+    gate_path.write_text(
+        json.dumps({"lessons_normalized": lessons, "consecutive_same": consecutive}),
+        encoding="utf-8",
+    )
+    return consecutive >= 2
+
+
+def _lessons_stagnation_warnings(run_dir: Path, plan_path: Path) -> list[ValidationIssue]:
+    if not plan_path.exists():
+        return []
+    plan_text = plan_path.read_text(encoding="utf-8")
+    if not _update_lessons_stagnation_state(run_dir, plan_text):
+        return []
+    return [
+        ValidationIssue(
+            level="warning",
+            document="PLAN.md",
+            message="## Lessons unchanged for 2+ consecutive planner iterations; "
+            "add a subtask or step for each item or dismiss with rationale.",
+        )
+    ]
 
 
 def _validate_plan_document(plan_path: Path) -> list[ValidationIssue]:

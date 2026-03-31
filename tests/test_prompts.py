@@ -28,6 +28,7 @@ def test_reviewer_format_with_all_placeholders():
         plan="P",
         subtask="S",
         changed_paths="- foo.py",
+        lint_block="(none)",
         file_contents_block="## foo.py\n```\ncode\n```",
         iteration=1,
         max_iter=10,
