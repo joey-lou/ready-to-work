@@ -7,7 +7,29 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-_SKIP_PREFIXES = (".rtw/", ".git/")
+# Paths relative to workspace root; also used by reviewer when scanning sources.
+_SKIP_PREFIXES = (
+    ".rtw/",
+    ".git/",
+    "target/",
+    "__pycache__/",
+    "node_modules/",
+    ".venv/",
+    "dist/",
+    "build/",
+)
+
+
+def workspace_path_is_skipped(rel_path: str) -> bool:
+    """True if a workspace-relative path is under ignored dirs (artifacts, VCS, rtw metadata)."""
+    norm = rel_path.replace("\\", "/").strip()
+    if not norm or norm == ".":
+        return False
+    for prefix in _SKIP_PREFIXES:
+        root = prefix.rstrip("/")
+        if norm == root or norm.startswith(f"{root}/"):
+            return True
+    return False
 
 
 @dataclass
@@ -51,7 +73,7 @@ class GitTracker(ChangeTracker):
                 continue
             status = line[:2]
             path = line[3:].strip()
-            if path.startswith(_SKIP_PREFIXES):
+            if workspace_path_is_skipped(path):
                 continue
             action = self._git_status_to_action(status)
             result.append(FileChange(path=path, action=action))
@@ -108,7 +130,7 @@ class SnapshotTracker(ChangeTracker):
         result = []
         all_paths = set(self._before.keys()) | set(after.keys())
         for path in sorted(all_paths):
-            if path.startswith(_SKIP_PREFIXES):
+            if workspace_path_is_skipped(path):
                 continue
             before_stat = self._before.get(path)
             after_stat = after.get(path)
@@ -126,8 +148,8 @@ class SnapshotTracker(ChangeTracker):
         for root, _dirs, files in os.walk(self.workspace):
             root_path = Path(root)
             rel_root = root_path.relative_to(self.workspace)
-            rel_root_str = str(rel_root)
-            if any(rel_root_str.startswith(p.rstrip("/")) for p in _SKIP_PREFIXES):
+            rel_root_str = "" if rel_root == Path() else rel_root.as_posix()
+            if rel_root_str and workspace_path_is_skipped(rel_root_str):
                 continue
             for filename in files:
                 file_path = root_path / filename

@@ -91,3 +91,25 @@ def test_retry_uses_validate_callable():
             validate=validate_reviewer_output,
         )
         assert ok is True
+
+
+def test_planner_warns_after_repeated_identical_lessons():
+    """Third consecutive planner pass with the same ## Lessons body yields a warning."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        plan_body = "# P\n\n## Steps\n1. a\n\n## Lessons\n- same lesson\n\n"
+        (d / "PLAN.md").write_text(plan_body, encoding="utf-8")
+        (d / "SUBTASK.md").write_text("# S\n\n## Acceptance criteria\n- [ ] x\n", encoding="utf-8")
+        (d / "state.json").write_text(json.dumps({"plan_status": "IN_PROGRESS"}), encoding="utf-8")
+
+        r1 = validate_planner_output(d)
+        assert r1.passed
+        assert not any("Lessons unchanged" in i.message for i in r1.issues)
+
+        r2 = validate_planner_output(d)
+        assert r2.passed
+        assert not any("Lessons unchanged" in i.message for i in r2.issues)
+
+        r3 = validate_planner_output(d)
+        assert r3.passed
+        assert any("Lessons unchanged" in i.message for i in r3.issues)
